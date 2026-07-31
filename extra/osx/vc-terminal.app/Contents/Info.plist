@@ -7,11 +7,11 @@
   <key>CFBundleExecutable</key>
   <string>alacritty</string>
   <key>CFBundleIdentifier</key>
-  <string>org.alacritty</string>
+  <string>io.vetcoders.vc-terminal</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Alacritty</string>
+  <string>vc-terminal</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -31,32 +31,32 @@
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
   <key>CFBundleDisplayName</key>
-  <string>Alacritty</string>
+  <string>vc-terminal</string>
   <key>NSRequiresAquaSystemAppearance</key>
   <string>NO</string>
     <key>com.apple.security.automation.apple-events</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>An application in Alacritty would like to access AppleScript.</string>
+    <string>An application in vc-terminal would like to access AppleScript.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>An application in Alacritty would like to access calendar data.</string>
+    <string>An application in vc-terminal would like to access calendar data.</string>
     <key>NSCameraUsageDescription</key>
-    <string>An application in Alacritty would like to access the camera.</string>
+    <string>An application in vc-terminal would like to access the camera.</string>
     <key>NSContactsUsageDescription</key>
-    <string>An application in Alacritty wants to access your contacts.</string>
+    <string>An application in vc-terminal wants to access your contacts.</string>
     <key>NSLocationAlwaysUsageDescription</key>
-    <string>An application in Alacritty would like to access your location information, even in the background.</string>
+    <string>An application in vc-terminal would like to access your location information, even in the background.</string>
     <key>NSLocationUsageDescription</key>
-    <string>An application in Alacritty would like to access your location information.</string>
+    <string>An application in vc-terminal would like to access your location information.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>An application in Alacritty would like to access your location information while active.</string>
+    <string>An application in vc-terminal would like to access your location information while active.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>An application in Alacritty would like to access your microphone.</string>
+    <string>An application in vc-terminal would like to access your microphone.</string>
     <key>NSRemindersUsageDescription</key>
-    <string>An application in Alacritty would like to access your reminders.</string>
+    <string>An application in vc-terminal would like to access your reminders.</string>
     <key>NSSystemAdministrationUsageDescription</key>
-    <string>An application in Alacritty requires elevated permissions.</string>
+    <string>An application in vc-terminal requires elevated permissions.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>An application in Alacritty wants to use Bluetooth.</string>
+    <string>An application in vc-terminal wants to use Bluetooth.</string>
 </dict>
 </plist>
