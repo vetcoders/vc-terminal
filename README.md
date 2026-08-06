@@ -61,6 +61,14 @@ installed.
 
 [the website]: https://alacritty.org/config-alacritty.html
 
+### Vibecrafted host fragment
+
+For the VetCoders / Vibecrafted stack, the recommended host fragment lives at
+`extra/config/vibecrafted-host.toml` (wheel split by alternate buffer +
+`option_as_alt`). The full preset is owned by **vc-frame**:
+`tools/alacritty/vc-frame.toml` and `tools/alacritty/launch-primary-shell.zsh`.
+Do not wrap the login shell in permanent `smcup` — that kills host scrollback.
+
 Alacritty doesn't create the config file for you, but it looks for one in the
 following locations:
 
