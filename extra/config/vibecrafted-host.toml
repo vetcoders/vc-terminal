@@ -1,0 +1,36 @@
+# Vibecrafted host fragment for vc-terminal / Alacritty.
+#
+# Merge into the operator's alacritty.toml (or import the full preset from
+# vc-frame/tools/alacritty/vc-frame.toml). This fragment is the minimum
+# contract so mouse-wheel scrollback survives reinstalls.
+#
+# Source of truth: vc-frame/tools/alacritty/vc-frame.toml
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+
+[window]
+# macOS: Option must be Alt for vc-frame composer / writer layer.
+option_as_alt = "Both"
+
+[scrolling]
+history = 50000
+multiplier = 3
+
+[mouse]
+hide_when_typing = true
+# Split wheel by terminal buffer:
+#   ~Alt (primary / normal shell) → Alacritty scrollback
+#    Alt (TUI without mouse protocol) → Up/Down keys
+# Shift always forces terminal scrollback (bypass app mouse reporting).
+#
+# Never wrap the login shell in permanent smcup — that kills scrollback.
+# Plain-shell entrypoint: vc-frame/tools/alacritty/launch-primary-shell.zsh
+bindings = [
+  { mouse = "WheelUp",   mode = "~Alt", action = "ScrollLineUp" },
+  { mouse = "WheelDown", mode = "~Alt", action = "ScrollLineDown" },
+
+  { mouse = "WheelUp",   mode = "Alt",  chars = "\u001bOA" },
+  { mouse = "WheelDown", mode = "Alt",  chars = "\u001bOB" },
+
+  { mouse = "WheelUp",   mods = "Shift", action = "ScrollLineUp" },
+  { mouse = "WheelDown", mods = "Shift", action = "ScrollLineDown" },
+]
