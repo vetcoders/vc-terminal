@@ -4,3 +4,4 @@ dist/
 
 # macOS global "Icon" pattern (case-insensitive) swallows assets/icon — re-include
 !assets/icon/
+/.loctree

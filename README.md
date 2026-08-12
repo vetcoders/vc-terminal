@@ -63,7 +63,7 @@ installed.
 
 ### Vibecrafted host fragment
 
-For the VetCoders / Vibecrafted stack, the recommended host fragment lives at
+For the Vetcoders / Vibecrafted stack, the recommended host fragment lives at
 `extra/config/vibecrafted-host.toml` (wheel split by alternate buffer +
 `option_as_alt`). The full preset is owned by **vc-frame**:
 `tools/alacritty/vc-frame.toml` and `tools/alacritty/launch-primary-shell.zsh`.
