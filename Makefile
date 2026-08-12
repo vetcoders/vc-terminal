@@ -1,5 +1,5 @@
 # vc-terminal (Alacritty fork) — canonical build / release surface
-# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by vetcoders (c)2024-2026 LibraxisAI
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 #
 # Shape mirrors labs/vc-surface (wezterm fork): help/precheck/gates +
 # codescribe-shaped app/dmg-signed/notarize release surface.
