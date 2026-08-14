@@ -2,7 +2,7 @@
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator</h1>
+<h1 align="center">vc-terminal — Vibecrafted terminal substrate</h1>
 
 <p align="center">
   <img alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"
@@ -10,6 +10,23 @@
 </p>
 
 ## About
+
+`vc-terminal` is the deterministic terminal donor used by the
+[`vibecrafted`](https://github.com/vetcoders/vibecrafted) release builder. It
+does not publish or install a separate app, DMG, MSI, or update channel.
+`Vibecrafted.app` owns packaging, signing, notarization, installation, updates,
+runtime environment and the user-facing product boundary; this repository owns
+the terminal binary and its tests.
+
+Integrator entrypoint:
+
+```sh
+make release-bins
+```
+
+For end-user installation, use the single `Vibecrafted.dmg` from the
+Vibecrafted release. The upstream Alacritty documentation below remains useful
+for inherited terminal behavior and development.
 
 Alacritty is a modern terminal emulator that comes with sensible defaults, but
 allows for extensive [configuration](#configuration). By integrating with other
