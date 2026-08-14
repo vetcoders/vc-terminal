@@ -2,6 +2,9 @@ name: CI
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -14,23 +17,25 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Stable
         run: cargo test
       - name: Stable (no default features)
         run: cargo test -p alacritty_terminal --no-default-features
       - name: Oldstable
         run: |
-          rustup default $(cat Cargo.toml | grep "rust-version" | sed 's/.*"\(.*\)".*/\1/')
+          rust_version="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$rust_version"
+          rustup default "$rust_version"
           cargo test
       - name: Clippy
         run: |
           rustup component add clippy
-          cargo clippy --all-targets
+          cargo clippy --all-targets -- -D warnings
   check-macos-x86_64:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install target
         run: rustup update && rustup target add x86_64-apple-darwin
       - name: Build
