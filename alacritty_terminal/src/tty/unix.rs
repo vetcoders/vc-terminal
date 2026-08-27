@@ -11,8 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "macos")]
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::{env, ptr};
 
 use libc::{F_GETFL, F_SETFL, O_NONBLOCK, TIOCSCTTY, c_int, fcntl};
@@ -26,7 +27,7 @@ use signal_hook::low_level::{pipe as signal_pipe, unregister as unregister_signa
 use signal_hook::{SigId, consts as sigconsts};
 
 use crate::event::{OnResize, WindowSize};
-use crate::tty::{ChildEvent, EventedPty, EventedReadWrite, Options};
+use crate::tty::{ChildEvent, ChildExitBehavior, EventedPty, EventedReadWrite, Options};
 
 // Interest in PTY read/writes.
 pub(crate) const PTY_READ_WRITE_TOKEN: usize = 0;
@@ -100,15 +101,16 @@ fn get_pw_entry(buf: &mut [i8; 1024]) -> Result<Passwd<'_>> {
 }
 
 pub struct Pty {
-    child: Child,
+    child: Option<Child>,
     file: File,
     signals: UnixStream,
     sig_id: SigId,
+    child_exit_behavior: ChildExitBehavior,
 }
 
 impl Pty {
     pub fn child(&self) -> &Child {
-        &self.child
+        self.child.as_ref().expect("PTY child is present until drop")
     }
 
     pub fn file(&self) -> &File {
@@ -128,31 +130,19 @@ impl ShellUser {
     /// before falling back on looking into `passwd`.
     fn from_env() -> Result<Self> {
         let mut buf = [0; 1024];
-        let pw = get_pw_entry(&mut buf);
-
-        let user = match env::var("USER") {
-            Ok(user) => user,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.name.to_owned(),
-                Err(err) => return Err(err),
-            },
+        let user = env::var("USER");
+        let home = env::var("HOME");
+        let shell = env::var("SHELL");
+        let pw = if user.is_err() || home.is_err() || shell.is_err() {
+            Some(get_pw_entry(&mut buf)?)
+        } else {
+            None
         };
+        let pw = || pw.as_ref().expect("passwd entry was fetched for a missing shell variable");
 
-        let home = match env::var("HOME") {
-            Ok(home) => home,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.dir.to_owned(),
-                Err(err) => return Err(err),
-            },
-        };
-
-        let shell = match env::var("SHELL") {
-            Ok(shell) => shell,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.shell.to_owned(),
-                Err(err) => return Err(err),
-            },
-        };
+        let user = user.unwrap_or_else(|_| pw().name.to_owned());
+        let home = home.unwrap_or_else(|_| pw().dir.to_owned());
+        let shell = shell.unwrap_or_else(|_| pw().shell.to_owned());
 
         Ok(Self { user, home, shell })
     }
@@ -293,7 +283,13 @@ pub fn from_fd(config: &Options, window_id: u64, master: OwnedFd, slave: OwnedFd
                 set_nonblocking(master_fd)?;
             }
 
-            Ok(Pty { child, file: File::from(master), signals, sig_id })
+            Ok(Pty {
+                child: Some(child),
+                file: File::from(master),
+                signals,
+                sig_id,
+                child_exit_behavior: config.child_exit_behavior,
+            })
         },
         Err(err) => Err(Error::new(
             err.kind(),
@@ -308,16 +304,34 @@ pub fn from_fd(config: &Options, window_id: u64, master: OwnedFd, slave: OwnedFd
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // Make sure the PTY is terminated properly.
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGHUP);
-        }
-
         // Clear signal-hook handler.
         unregister_signal(self.sig_id);
 
-        let _ = self.child.wait();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+
+        match self.child_exit_behavior {
+            ChildExitBehavior::Terminate => {
+                // Preserve stock terminal semantics outside a durable host session.
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGHUP);
+                }
+                let _ = child.wait();
+            },
+            ChildExitBehavior::Detach => {
+                // Dropping the PTY master releases the foreground client. Do not
+                // explicitly signal it: vc-frame owns the durable server/session
+                // and interprets client loss as detach. Reap asynchronously so a
+                // surviving client can never block window or application close.
+                let _ = reap_detached_child(child);
+            },
+        }
     }
+}
+
+fn reap_detached_child(mut child: Child) -> Result<JoinHandle<Result<ExitStatus>>> {
+    std::thread::Builder::new().name("pty-child-reaper".into()).spawn(move || child.wait())
 }
 
 impl EventedReadWrite for Pty {
@@ -392,7 +406,7 @@ impl EventedPty for Pty {
         }
 
         // Match on the child process.
-        match self.child.try_wait() {
+        match self.child.as_mut()?.try_wait() {
             Err(err) => {
                 error!("Error checking child process termination: {err}");
                 None
@@ -445,4 +459,75 @@ unsafe fn set_nonblocking(fd: c_int) -> Result<()> {
 fn test_get_pw_entry() {
     let mut buf: [i8; 1024] = [0; 1024];
     let _pw = get_pw_entry(&mut buf).unwrap();
+}
+
+#[test]
+fn detached_child_exits_without_host_signal() {
+    let child = Command::new("/bin/sh")
+        .args(["-c", "trap 'exit 97' HUP; sleep 0.05; exit 0"])
+        .spawn()
+        .unwrap();
+
+    let status = reap_detached_child(child).unwrap().join().unwrap().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn close_keeps_durable_server_available_for_reattach() {
+    use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, Instant, SystemTime};
+
+    let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+    let root = env::temp_dir().join(format!("vc-terminal-detach-{}-{nonce}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let ready = root.join("ready");
+    let session = root.join("session");
+    let reattached = root.join("reattached");
+
+    let script = format!(
+        "nohup /bin/sh -c 'sleep 0.1; printf workspace-alpha > {}' </dev/null >/dev/null 2>&1 & \
+         printf ready > {}; wait",
+        session.display(),
+        ready.display()
+    );
+    let options = Options {
+        shell: Some(crate::tty::Shell::new("/bin/sh".into(), vec!["-c".into(), script])),
+        child_exit_behavior: ChildExitBehavior::Detach,
+        ..Options::default()
+    };
+    let pty = new(
+        &options,
+        WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 },
+        1,
+    )
+    .unwrap();
+
+    wait_for_test_path(&ready);
+    drop(pty);
+    wait_for_test_path(&session);
+
+    let status = Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "test \"$(cat {})\" = workspace-alpha && touch {}",
+                session.display(),
+                reattached.display()
+            ),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(reattached.exists());
+
+    fs::remove_dir_all(root).unwrap();
+
+    fn wait_for_test_path(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(path.exists(), "timed out waiting for {}", path.display());
+    }
 }

@@ -86,6 +86,14 @@ For the Vetcoders / Vibecrafted stack, the recommended host fragment lives at
 `tools/alacritty/vc-frame.toml` and `tools/alacritty/launch-primary-shell.zsh`.
 Do not wrap the login shell in permanent `smcup` — that kills host scrollback.
 
+When launched by Vibecrafted, vc-terminal is a replaceable host: closing its
+window releases the PTY client without explicitly signalling it, while vc-frame
+continues to own the durable workspace/session. Stock Alacritty launches retain
+their normal terminate-and-reap behavior. Operators can force either host policy
+with `VIBECRAFTED_TERMINAL_CLOSE_MODE=detach|terminate`; destructive session
+termination remains an explicit `vc-frame kill-session` / `delete-session`
+operation and is never inferred from window close.
+
 Alacritty doesn't create the config file for you, but it looks for one in the
 following locations:
 

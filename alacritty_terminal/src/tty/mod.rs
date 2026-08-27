@@ -18,6 +18,17 @@ pub mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
+/// How the terminal host releases its child when the window goes away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChildExitBehavior {
+    /// Signal and synchronously reap the child, preserving stock terminal semantics.
+    #[default]
+    Terminate,
+
+    /// Close the PTY without explicitly signalling the child, then reap it asynchronously.
+    Detach,
+}
+
 /// Configuration for the `Pty` interface.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Options {
@@ -34,6 +45,9 @@ pub struct Options {
 
     /// Extra environment variables.
     pub env: HashMap<String, String>,
+
+    /// How the PTY child is released when its host window closes.
+    pub child_exit_behavior: ChildExitBehavior,
 
     /// Specifies whether the Windows shell arguments should be escaped.
     ///

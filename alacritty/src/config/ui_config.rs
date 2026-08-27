@@ -16,7 +16,7 @@ use alacritty_config::SerdeReplace;
 use alacritty_config_derive::{ConfigDeserialize, SerdeReplace};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::search::RegexSearch;
-use alacritty_terminal::tty::{Options as PtyOptions, Shell};
+use alacritty_terminal::tty::{ChildExitBehavior, Options as PtyOptions, Shell};
 
 use crate::config::LOG_TARGET_CONFIG;
 use crate::config::bell::BellConfig;
@@ -137,6 +137,11 @@ impl UiConfig {
             shell,
             drain_on_exit: false,
             env: HashMap::new(),
+            child_exit_behavior: vibecrafted_child_exit_behavior(
+                std::env::var("VIBECRAFTED_TERMINAL_CLOSE_MODE").ok().as_deref(),
+                std::env::var_os("VIBECRAFTED_RUNTIME_ROOT").is_some(),
+                std::env::var_os("VIBECRAFTED_VC_FRAME_BIN").is_some(),
+            ),
             #[cfg(target_os = "windows")]
             escape_args: false,
         }
@@ -166,6 +171,24 @@ impl UiConfig {
     #[inline]
     pub fn ipc_socket(&self) -> bool {
         self.ipc_socket.unwrap_or(self.general.ipc_socket)
+    }
+}
+
+/// Select durable-host semantics without changing stock Alacritty behavior.
+///
+/// Vibecrafted.app and the installed `vc-terminal` wrapper both publish the
+/// runtime root and the generation-bound vc-frame executable. Together they
+/// identify the replaceable product host; either marker alone is insufficient.
+fn vibecrafted_child_exit_behavior(
+    close_mode: Option<&str>,
+    has_runtime_root: bool,
+    has_frame_binary: bool,
+) -> ChildExitBehavior {
+    match close_mode {
+        Some("detach") => ChildExitBehavior::Detach,
+        Some("terminate") => ChildExitBehavior::Terminate,
+        _ if has_runtime_root && has_frame_binary => ChildExitBehavior::Detach,
+        _ => ChildExitBehavior::Terminate,
     }
 }
 
@@ -685,6 +708,31 @@ mod tests {
     use alacritty_terminal::term::test::mock_term;
 
     use crate::display::hint::visible_regex_match_iter;
+
+    #[test]
+    fn stock_terminal_terminates_child_on_close() {
+        assert_eq!(
+            vibecrafted_child_exit_behavior(None, false, false),
+            ChildExitBehavior::Terminate
+        );
+        assert_eq!(
+            vibecrafted_child_exit_behavior(None, true, false),
+            ChildExitBehavior::Terminate
+        );
+    }
+
+    #[test]
+    fn vibecrafted_host_detaches_unless_explicitly_overridden() {
+        assert_eq!(vibecrafted_child_exit_behavior(None, true, true), ChildExitBehavior::Detach);
+        assert_eq!(
+            vibecrafted_child_exit_behavior(Some("terminate"), true, true),
+            ChildExitBehavior::Terminate
+        );
+        assert_eq!(
+            vibecrafted_child_exit_behavior(Some("detach"), false, false),
+            ChildExitBehavior::Detach
+        );
+    }
 
     #[test]
     fn positive_url_parsing_regex_test() {
