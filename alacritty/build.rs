@@ -6,6 +6,18 @@ use std::process::Command;
 use gl_generator::{Api, Fallbacks, GlobalGenerator, Profile, Registry};
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
+        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        println!("cargo:rerun-if-changed={git_dir}/index");
+    }
+    if let Some(common_dir) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+        println!("cargo:rerun-if-changed={common_dir}/packed-refs");
+        if let Some(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            println!("cargo:rerun-if-changed={common_dir}/{head_ref}");
+        }
+    }
+
     let mut version = String::from(env!("CARGO_PKG_VERSION"));
     if let Some(commit_hash) = commit_hash() {
         version = format!("{version} ({commit_hash})");
@@ -30,8 +42,12 @@ fn main() {
 }
 
 fn commit_hash() -> Option<String> {
+    git(&["rev-parse", "--short", "HEAD"])
+}
+
+fn git(args: &[&str]) -> Option<String> {
     Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+        .args(args)
         .output()
         .ok()
         .filter(|output| output.status.success())
