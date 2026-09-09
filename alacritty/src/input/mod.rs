@@ -467,14 +467,11 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     pub fn mouse_moved(&mut self, position: PhysicalPosition<f64>) {
         let size_info = self.ctx.size_info();
 
-        let (x, y) = position.into();
+        let (x, y): (i32, i32) = position.into();
+        let mouse_y = y;
 
         let lmb_pressed = self.ctx.mouse().left_button_state == ElementState::Pressed;
         let rmb_pressed = self.ctx.mouse().right_button_state == ElementState::Pressed;
-        if !self.ctx.selection_is_empty() && (lmb_pressed || rmb_pressed) {
-            self.update_selection_scrolling(y);
-        }
-
         let display_offset = self.ctx.terminal().grid().display_offset();
         let old_point = self.ctx.mouse().point(&size_info, display_offset);
 
@@ -507,9 +504,30 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         // Prompt hint highlight update.
         self.ctx.mouse_mut().hint_highlight_dirty = true;
 
-        // Don't launch URLs if mouse has moved.
+        self.mouse_motion(cell_changed, point, cell_side, lmb_pressed, rmb_pressed, mouse_y);
+    }
+
+    /// Route pointer movement after `mouse_moved` has updated the cursor position.
+    fn mouse_motion(
+        &mut self,
+        cell_changed: bool,
+        point: Point,
+        cell_side: Side,
+        lmb_pressed: bool,
+        rmb_pressed: bool,
+        mouse_y: i32,
+    ) {
+        // Don't launch URLs if mouse has moved. A captured host gesture remains owned by the
+        // hint until its matching release, even after movement cancels the launch.
         self.ctx.mouse_mut().block_hint_launcher = true;
         self.cancel_hint_click();
+        if !matches!(self.ctx.mouse().hint_click, HintClickState::None) {
+            return;
+        }
+
+        if !self.ctx.selection_is_empty() && (lmb_pressed || rmb_pressed) {
+            self.update_selection_scrolling(mouse_y);
+        }
 
         if (lmb_pressed || rmb_pressed)
             && (self.ctx.modifiers().state().shift_key() || !self.ctx.mouse_mode())
@@ -1211,6 +1229,7 @@ mod tests {
     use winit::window::WindowId;
 
     use alacritty_terminal::event::Event as TerminalEvent;
+    use alacritty_terminal::index::{Column, Line};
 
     use crate::config::Binding;
     use crate::message_bar::MessageBuffer;
@@ -1229,8 +1248,10 @@ mod tests {
         pub modifiers: Modifiers,
         pub modifier_state: ModifiersState,
         pub mouse_mode: bool,
+        pub selection_is_empty: bool,
         pub has_mouse_hint: bool,
         pub triggered_mouse_hints: Rc<RefCell<usize>>,
+        pub selection_updates: Rc<RefCell<usize>>,
         pub pty_writes: Rc<RefCell<Vec<Vec<u8>>>>,
         config: &'a UiConfig,
         inline_search_state: &'a mut InlineSearchState,
@@ -1275,11 +1296,15 @@ mod tests {
         }
 
         fn selection_is_empty(&self) -> bool {
-            true
+            self.selection_is_empty
         }
 
         fn scroll(&mut self, scroll: Scroll) {
             self.terminal.scroll_display(scroll);
+        }
+
+        fn update_selection(&mut self, _point: Point, _side: Side) {
+            *self.selection_updates.borrow_mut() += 1;
         }
 
         fn mouse_mode(&self) -> bool {
@@ -1398,8 +1423,10 @@ mod tests {
                     modifiers: Default::default(),
                     modifier_state: Default::default(),
                     mouse_mode: false,
+                    selection_is_empty: true,
                     has_mouse_hint: false,
                     triggered_mouse_hints: Default::default(),
+                    selection_updates: Default::default(),
                     pty_writes: Default::default(),
                     message_buffer: &mut message_buffer,
                     inline_search_state: &mut inline_search_state,
@@ -1444,8 +1471,10 @@ mod tests {
             modifiers: Default::default(),
             modifier_state: ModifiersState::SUPER,
             mouse_mode: true,
+            selection_is_empty: true,
             has_mouse_hint: true,
             triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
             pty_writes: Default::default(),
             message_buffer: &mut message_buffer,
             inline_search_state: &mut inline_search_state,
@@ -1480,8 +1509,10 @@ mod tests {
             modifiers: Default::default(),
             modifier_state: ModifiersState::SUPER,
             mouse_mode: true,
+            selection_is_empty: true,
             has_mouse_hint: true,
             triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
             pty_writes: Default::default(),
             message_buffer: &mut message_buffer,
             inline_search_state: &mut inline_search_state,
@@ -1505,8 +1536,10 @@ mod tests {
             modifiers: Default::default(),
             modifier_state: ModifiersState::SUPER,
             mouse_mode: true,
+            selection_is_empty: true,
             has_mouse_hint: true,
             triggered_mouse_hints: opened.clone(),
+            selection_updates: Default::default(),
             pty_writes: pty_writes.clone(),
             message_buffer: &mut message_buffer,
             inline_search_state: &mut inline_search_state,
@@ -1521,11 +1554,14 @@ mod tests {
     }
 
     #[test]
-    fn canceled_command_hint_click_consumes_its_release_without_a_pty_leak() {
+    fn canceled_command_hint_motion_stays_host_owned_until_release() {
         let mut clipboard = Clipboard::new_nop();
         let cfg = UiConfig::default();
         let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
         let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut terminal, b"\x1b[?1002h");
         let mut mouse = Mouse::default();
         let mut inline_search_state = InlineSearchState::default();
         let mut message_buffer = MessageBuffer::default();
@@ -1537,8 +1573,11 @@ mod tests {
             modifiers: Default::default(),
             modifier_state: ModifiersState::SUPER,
             mouse_mode: true,
+            // A captured hint must not start or extend a pre-existing selection while moving.
+            selection_is_empty: false,
             has_mouse_hint: true,
             triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
             pty_writes: Default::default(),
             message_buffer: &mut message_buffer,
             inline_search_state: &mut inline_search_state,
@@ -1547,13 +1586,28 @@ mod tests {
         let mut processor = Processor::new(context);
 
         processor.mouse_input(ElementState::Pressed, MouseButton::Left);
-        // This is the cancellation path used by pointer movement and focus loss.
-        processor.cancel_hint_click();
+        // Use the production motion dispatcher: release Cmd after the capture, then move with
+        // application drag reporting enabled. This must cancel and retain host ownership.
+        processor.ctx.modifier_state = ModifiersState::default();
+        processor.mouse_motion(true, Point::new(Line(0), Column(0)), Side::Left, true, false, 0);
+
+        assert_eq!(processor.ctx.mouse.hint_click, HintClickState::Canceled(MouseButton::Left));
+        assert_eq!(*processor.ctx.selection_updates.borrow(), 0);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
         processor.mouse_input(ElementState::Released, MouseButton::Left);
 
         assert_eq!(*processor.ctx.triggered_mouse_hints.borrow(), 0);
         assert!(processor.ctx.pty_writes.borrow().is_empty());
         assert_eq!(processor.ctx.mouse.hint_click, HintClickState::None);
+
+        // An ordinary application drag remains on the same production motion route.
+        processor.ctx.selection_is_empty = true;
+        processor.ctx.has_mouse_hint = false;
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.ctx.pty_writes.borrow_mut().clear();
+        processor.mouse_motion(true, Point::new(Line(0), Column(0)), Side::Left, true, false, 0);
+        assert_eq!(*processor.ctx.pty_writes.borrow(), vec![vec![b'\x1b', b'[', b'M', 64, 33, 33]]);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
     }
 
     #[test]
@@ -1574,8 +1628,10 @@ mod tests {
             modifiers: Default::default(),
             modifier_state: ModifiersState::SUPER,
             mouse_mode: true,
+            selection_is_empty: true,
             has_mouse_hint: false,
             triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
             pty_writes: Default::default(),
             message_buffer: &mut message_buffer,
             inline_search_state: &mut inline_search_state,
