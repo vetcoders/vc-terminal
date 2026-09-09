@@ -76,6 +76,8 @@ const CLICK_THRESHOLD: Duration = Duration::from_millis(400);
 /// are activated.
 pub struct Processor<T: EventListener, A: ActionContext<T>> {
     pub ctx: A,
+    /// Whether the current left-button gesture belongs to a command hint.
+    mouse_hint_click: bool,
     _phantom: PhantomData<T>,
 }
 
@@ -93,6 +95,9 @@ pub trait ActionContext<T: EventListener> {
     fn mouse(&self) -> &Mouse;
     fn touch_purpose(&mut self) -> &mut TouchPurpose;
     fn modifiers(&mut self) -> &mut Modifiers;
+    fn modifier_state(&mut self) -> ModifiersState {
+        self.modifiers().state()
+    }
     fn scroll(&mut self, _scroll: Scroll) {}
     fn window(&mut self) -> &mut Window;
     fn display(&mut self) -> &mut Display;
@@ -134,6 +139,16 @@ pub trait ActionContext<T: EventListener> {
     fn inline_search_previous(&mut self) {}
     fn hint_input(&mut self, _character: char) {}
     fn trigger_hint(&mut self, _hint: &HintMatch) {}
+    fn has_mouse_hint(&mut self) -> bool {
+        self.display().highlighted_hint.is_some()
+    }
+    fn trigger_mouse_hint(&mut self) {
+        let hint = self.display().highlighted_hint.take();
+        if let Some(hint) = hint.as_ref() {
+            self.trigger_hint(hint);
+        }
+        self.display().highlighted_hint = hint;
+    }
     fn expand_selection(&mut self) {}
     fn semantic_word(&self, point: Point) -> String;
     fn on_terminal_input_start(&mut self) {}
@@ -447,7 +462,7 @@ impl<T: EventListener> Execute<T> for Action {
 
 impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     pub fn new(ctx: A) -> Self {
-        Self { ctx, _phantom: Default::default() }
+        Self { ctx, mouse_hint_click: false, _phantom: Default::default() }
     }
 
     #[inline]
@@ -615,8 +630,14 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     }
 
     fn on_mouse_press(&mut self, button: MouseButton) {
+        self.mouse_hint_click = self.command_hint_owns_click(button);
+        if self.mouse_hint_click {
+            self.ctx.mouse_mut().click_state = ClickState::None;
+            return;
+        }
+
         // Handle mouse mode.
-        if !self.ctx.modifiers().state().shift_key() && self.ctx.mouse_mode() {
+        if !self.ctx.modifier_state().shift_key() && self.ctx.mouse_mode() {
             self.ctx.mouse_mut().click_state = ClickState::None;
 
             let code = match button {
@@ -694,7 +715,15 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     }
 
     fn on_mouse_release(&mut self, button: MouseButton) {
-        if !self.ctx.modifiers().state().shift_key() && self.ctx.mouse_mode() {
+        if self.mouse_hint_click {
+            self.mouse_hint_click = false;
+            if self.command_hint_owns_click(button) {
+                self.ctx.trigger_mouse_hint();
+            }
+            return;
+        }
+
+        if !self.ctx.modifier_state().shift_key() && self.ctx.mouse_mode() {
             let code = match button {
                 MouseButton::Left => 0,
                 MouseButton::Middle => 1,
@@ -707,11 +736,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         }
 
         // Trigger hints highlighted by the mouse.
-        let hint = self.ctx.display().highlighted_hint.take();
-        if let Some(hint) = hint.as_ref().filter(|_| button == MouseButton::Left) {
-            self.ctx.trigger_hint(hint);
+        if button == MouseButton::Left {
+            self.ctx.trigger_mouse_hint();
         }
-        self.ctx.display().highlighted_hint = hint;
 
         let timer_id = TimerId::new(Topic::SelectionScrolling, self.ctx.window().id());
         self.ctx.scheduler_mut().unschedule(timer_id);
@@ -720,6 +747,15 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             // Copy selection on release, to prevent flooding the display server.
             self.ctx.copy_selection(ClipboardType::Selection);
         }
+    }
+
+    /// Command/Super hint clicks take priority over application mouse reporting.
+    fn command_hint_owns_click(&mut self, button: MouseButton) -> bool {
+        button == MouseButton::Left
+            && self.ctx.mouse_mode()
+            && !self.ctx.modifier_state().shift_key()
+            && self.ctx.modifier_state().super_key()
+            && self.ctx.has_mouse_hint()
     }
 
     pub fn mouse_wheel_input(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
@@ -1152,6 +1188,8 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 mod tests {
     use super::*;
 
+    use std::cell::RefCell;
+
     use winit::event::{DeviceId, Event as WinitEvent, WindowEvent};
     use winit::keyboard::Key;
     use winit::window::WindowId;
@@ -1173,11 +1211,20 @@ mod tests {
         pub clipboard: &'a mut Clipboard,
         pub message_buffer: &'a mut MessageBuffer,
         pub modifiers: Modifiers,
+        pub modifier_state: ModifiersState,
+        pub mouse_mode: bool,
+        pub has_mouse_hint: bool,
+        pub triggered_mouse_hints: usize,
+        pub pty_writes: RefCell<Vec<Vec<u8>>>,
         config: &'a UiConfig,
         inline_search_state: &'a mut InlineSearchState,
     }
 
     impl<T: EventListener> super::ActionContext<T> for ActionContext<'_, T> {
+        fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&self, data: B) {
+            self.pty_writes.borrow_mut().push(data.into().to_vec());
+        }
+
         fn search_next(
             &mut self,
             _origin: Point,
@@ -1220,7 +1267,7 @@ mod tests {
         }
 
         fn mouse_mode(&self) -> bool {
-            false
+            self.mouse_mode
         }
 
         #[inline]
@@ -1240,6 +1287,18 @@ mod tests {
 
         fn modifiers(&mut self) -> &mut Modifiers {
             &mut self.modifiers
+        }
+
+        fn modifier_state(&mut self) -> ModifiersState {
+            self.modifier_state
+        }
+
+        fn has_mouse_hint(&mut self) -> bool {
+            self.has_mouse_hint
+        }
+
+        fn trigger_mouse_hint(&mut self) {
+            self.triggered_mouse_hints += 1;
         }
 
         fn window(&mut self) -> &mut Window {
@@ -1321,6 +1380,11 @@ mod tests {
                     size_info: &size,
                     clipboard: &mut clipboard,
                     modifiers: Default::default(),
+                    modifier_state: Default::default(),
+                    mouse_mode: false,
+                    has_mouse_hint: false,
+                    triggered_mouse_hints: 0,
+                    pty_writes: Default::default(),
                     message_buffer: &mut message_buffer,
                     inline_search_state: &mut inline_search_state,
                     config: &cfg,
@@ -1344,6 +1408,83 @@ mod tests {
                 assert_eq!(processor.ctx.mouse.click_state, $end_state);
             }
         }
+    }
+
+    #[test]
+    fn command_hint_click_owns_mouse_reporting_gesture() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut mouse = Mouse::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            has_mouse_hint: true,
+            triggered_mouse_hints: 0,
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+
+        assert_eq!(processor.ctx.triggered_mouse_hints, 1);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn mouse_reporting_keeps_ordinary_and_dragged_command_clicks_out_of_the_opener() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut mouse = Mouse::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            has_mouse_hint: false,
+            triggered_mouse_hints: 0,
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        // A nonmatching Command click remains an application mouse gesture.
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+        assert_eq!(processor.ctx.triggered_mouse_hints, 0);
+        assert_eq!(processor.ctx.pty_writes.borrow().len(), 2);
+
+        // A gesture that leaves its hint must not open it, nor leak only a release to the PTY.
+        processor.ctx.pty_writes.borrow_mut().clear();
+        processor.ctx.has_mouse_hint = true;
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.ctx.has_mouse_hint = false;
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+        assert_eq!(processor.ctx.triggered_mouse_hints, 0);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
     }
 
     macro_rules! test_process_binding {
