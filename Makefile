@@ -11,7 +11,11 @@
 # Config
 # ──────────────────────────────────────────────────────────
 
-CARGO ?= cargo
+# Keep Cargo subcommands (cargo-fmt, clippy) on the same rustup toolchain.
+ifneq ($(wildcard $(HOME)/.cargo/bin/rustup),)
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+endif
+CARGO ?= $(if $(wildcard $(HOME)/.cargo/bin/rustup),$(HOME)/.cargo/bin/cargo,cargo)
 BUILD_OPTS ?=
 APP_NAME := vc-terminal
 DEPLOYMENT_TARGET := MACOSX_DEPLOYMENT_TARGET="10.12"

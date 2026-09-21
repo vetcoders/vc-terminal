@@ -27,12 +27,7 @@ pub fn place_image<L: EventListener>(
     {
         crop_image(src_data, cmd)?
     } else {
-        (
-            src_data.pixels.clone(),
-            src_data.width,
-            src_data.height,
-            src_data.color_type,
-        )
+        (src_data.pixels.clone(), src_data.width, src_data.height, src_data.color_type)
     };
 
     // Scale the image if columns/rows are specified.
@@ -65,13 +60,14 @@ pub fn place_image<L: EventListener>(
     };
 
     let no_cursor_move = cmd.cursor_movement == 1;
-    let saved_cursor = if no_cursor_move {
-        Some(term.grid().cursor.point)
-    } else {
-        None
-    };
+    let saved_cursor = if no_cursor_move { Some(term.grid().cursor.point) } else { None };
 
-    crate::graphics::insert_graphic(term, graphic, None);
+    crate::graphics::insert_graphic(
+        term,
+        graphic,
+        None,
+        Some((image_id, cmd.placement_id, cmd.z_index)),
+    );
 
     if let Some(point) = saved_cursor {
         term.grid_mut().cursor.point = point;
@@ -166,10 +162,7 @@ pub fn scale_image(
 
     let src_image = image::RgbaImage::from_raw(src_w as u32, src_h as u32, rgba_pixels)
         .ok_or_else(|| {
-            format!(
-                "failed to create image buffer from {src_w}x{src_h} ({} bytes)",
-                pixels.len()
-            )
+            format!("failed to create image buffer from {src_w}x{src_h} ({} bytes)", pixels.len())
         })?;
 
     let resized = image::imageops::resize(
@@ -280,11 +273,7 @@ pub fn crop_image(
 pub fn resolve_or_assign_id<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) -> u32 {
     let state = &mut term.graphics.kitty_state;
 
-    let image_id = if cmd.image_id != 0 {
-        cmd.image_id
-    } else {
-        state.next_id()
-    };
+    let image_id = if cmd.image_id != 0 { cmd.image_id } else { state.next_id() };
 
     if cmd.image_number != 0 {
         state.number_to_id.insert(cmd.image_number, image_id);
@@ -355,7 +344,13 @@ mod tests {
     // Pixel scaling tests
     // ---------------------------------------------------------------
 
-    fn make_scale_params(color_type: ColorType, columns: u32, rows: u32, cw: usize, ch: usize) -> ScaleParams {
+    fn make_scale_params(
+        color_type: ColorType,
+        columns: u32,
+        rows: u32,
+        cw: usize,
+        ch: usize,
+    ) -> ScaleParams {
         ScaleParams { color_type, columns, rows, cell_width: cw, cell_height: ch }
     }
 
@@ -435,13 +430,7 @@ mod tests {
             pixels,
             is_opaque: false,
         };
-        let cmd = KittyCommand {
-            src_x: 2,
-            src_y: 2,
-            src_w: 4,
-            src_h: 4,
-            ..Default::default()
-        };
+        let cmd = KittyCommand { src_x: 2, src_y: 2, src_w: 4, src_h: 4, ..Default::default() };
         let (cropped, cw, ch, ct) = crop_image(&src, &cmd).unwrap();
         assert_eq!((cw, ch), (4, 4));
 
@@ -505,7 +494,7 @@ mod tests {
     #[test]
     fn offset_both() {
         let blue = [0u8, 0, 255, 255];
-        let pixels: Vec<u8> = blue.repeat(1); // 1×1 image
+        let pixels: Vec<u8> = blue.to_vec(); // 1×1 image
         let (out, w, h, ct) = apply_pixel_offsets(pixels, 1, 1, ColorType::Rgba, 2, 3);
         assert_eq!(w, 3);
         assert_eq!(h, 4);
@@ -560,13 +549,7 @@ mod tests {
             pixels,
             is_opaque: false,
         };
-        let cmd = KittyCommand {
-            src_x: 1,
-            src_y: 1,
-            src_w: 2,
-            src_h: 2,
-            ..Default::default()
-        };
+        let cmd = KittyCommand { src_x: 1, src_y: 1, src_w: 2, src_h: 2, ..Default::default() };
         let (cropped, w, h, ct) = crop_image(&src, &cmd).unwrap();
         assert_eq!(w, 2);
         assert_eq!(h, 2);
@@ -584,13 +567,7 @@ mod tests {
             pixels: vec![0; 64],
             is_opaque: false,
         };
-        let cmd = KittyCommand {
-            src_x: 3,
-            src_y: 3,
-            src_w: 3,
-            src_h: 3,
-            ..Default::default()
-        };
+        let cmd = KittyCommand { src_x: 3, src_y: 3, src_w: 3, src_h: 3, ..Default::default() };
         assert!(crop_image(&src, &cmd).is_err());
     }
 }

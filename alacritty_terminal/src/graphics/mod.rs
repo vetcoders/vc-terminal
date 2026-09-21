@@ -40,6 +40,8 @@ pub struct GraphicId(u64);
 /// added to the remove queue.
 #[derive(Clone, Debug)]
 pub struct TextureRef {
+    /// Kitty image, placement and z-index identity; absent for Sixel.
+    pub kitty: Option<(u32, u32, i32)>,
     /// Graphic identifier.
     pub id: GraphicId,
 
@@ -138,6 +140,7 @@ impl<'de> Deserialize<'de> for GraphicCell {
 
         let texture = TextureRef {
             id: data.texture,
+            kitty: None,
             width: data.tex_width,
             height: data.tex_height,
             cell_height: data.tex_cell_height,
@@ -470,7 +473,7 @@ impl Graphics {
 
 pub fn parse_sixel<L: EventListener>(term: &mut Term<L>, parser: sixel::Parser) {
     match parser.finish() {
-        Ok((graphic, palette)) => insert_graphic(term, graphic, Some(palette)),
+        Ok((graphic, palette)) => insert_graphic(term, graphic, Some(palette), None),
         Err(err) => log::warn!("Failed to parse Sixel data: {err}"),
     }
 }
@@ -479,6 +482,7 @@ pub fn insert_graphic<L: EventListener>(
     term: &mut Term<L>,
     graphic: GraphicData,
     palette: Option<Vec<Rgb>>,
+    kitty: Option<(u32, u32, i32)>,
 ) {
     let cell_width = term.graphics.cell_width as usize;
     let cell_height = term.graphics.cell_height as usize;
@@ -556,6 +560,7 @@ pub fn insert_graphic<L: EventListener>(
     // transparent portions of the image to be visible.
 
     let texture = Arc::new(TextureRef {
+        kitty,
         id: graphic_id,
         width,
         height,

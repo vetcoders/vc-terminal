@@ -2400,8 +2400,8 @@ impl<T: EventListener> Handler for Term<T> {
         if let Some(buf) = &mut self.graphics.kitty_apc_buffer {
             if let Some(cmd) = buf.finish() {
                 debug!(
-                    "[kitty] command: action={:?}, id={}, fmt={:?}, medium={:?}, \
-                     more={}, payload_len={}",
+                    "[kitty] command: action={:?}, id={}, fmt={:?}, medium={:?}, more={}, \
+                     payload_len={}",
                     cmd.action,
                     cmd.image_id,
                     cmd.format,
@@ -3622,7 +3622,10 @@ mod tests {
         let apc = format!("\x1b_Ga=t,f=32,s=2,v=2,i=1;{b64}\x1b\\");
         feed_bytes(&mut term, apc.as_bytes());
 
-        let img = term.graphics.kitty_state.get_image(1)
+        let img = term
+            .graphics
+            .kitty_state
+            .get_image(1)
             .expect("image 1 should be stored after transmit");
         assert_eq!(img.data.width, 2);
         assert_eq!(img.data.height, 2);
@@ -3639,7 +3642,10 @@ mod tests {
         let apc = format!("\x1b_Ga=T,f=32,s=2,v=2,i=5;{b64}\x1b\\");
         feed_bytes(&mut term, apc.as_bytes());
 
-        let img = term.graphics.kitty_state.get_image(5)
+        let img = term
+            .graphics
+            .kitty_state
+            .get_image(5)
             .expect("image 5 should be stored after transmit+display");
         assert_eq!(img.data.width, 2);
         assert_eq!(img.data.height, 2);
@@ -3696,15 +3702,20 @@ mod tests {
         // First chunk (m=1 = more coming).
         let apc1 = format!("\x1b_Ga=T,f=32,s=2,v=2,i=99,m=1;{chunk1}\x1b\\");
         feed_bytes(&mut term, apc1.as_bytes());
-        assert!(term.graphics.kitty_state.get_image(99).is_none(),
-            "image should NOT be stored mid-transfer");
+        assert!(
+            term.graphics.kitty_state.get_image(99).is_none(),
+            "image should NOT be stored mid-transfer"
+        );
         assert!(term.graphics.kitty_state.loading.is_some());
 
         // Final chunk (m=0).
         let apc2 = format!("\x1b_Gm=0;{chunk2}\x1b\\");
         feed_bytes(&mut term, apc2.as_bytes());
 
-        let img = term.graphics.kitty_state.get_image(99)
+        let img = term
+            .graphics
+            .kitty_state
+            .get_image(99)
             .expect("image should be stored after final chunk");
         assert_eq!(img.data.width, 2);
         assert_eq!(img.data.height, 2);
@@ -3718,23 +3729,24 @@ mod tests {
         let mut term = Term::new(Config::default(), &size, VoidListener);
 
         // Write raw RGBA pixel data to a temp file.
-        let pixels: Vec<u8> = vec![
-            255, 128, 64, 255, 0, 0, 0, 255,
-            64, 128, 255, 255, 255, 255, 255, 255,
-        ];
+        let pixels: Vec<u8> =
+            vec![255, 128, 64, 255, 0, 0, 0, 255, 64, 128, 255, 255, 255, 255, 255, 255];
         let dir = std::env::temp_dir();
         let path = dir.join(format!("kitty_e2e_file_{}.rgba", std::process::id()));
         std::fs::write(&path, &pixels).expect("write temp file");
 
         // Base64-encode the file path for the payload.
         use base64::Engine;
-        let path_b64 = base64::engine::general_purpose::STANDARD
-            .encode(path.to_str().unwrap().as_bytes());
+        let path_b64 =
+            base64::engine::general_purpose::STANDARD.encode(path.to_str().unwrap().as_bytes());
 
         let apc = format!("\x1b_Ga=t,t=f,f=32,s=2,v=2,i=50;{path_b64}\x1b\\");
         feed_bytes(&mut term, apc.as_bytes());
 
-        let img = term.graphics.kitty_state.get_image(50)
+        let img = term
+            .graphics
+            .kitty_state
+            .get_image(50)
             .expect("image should be stored from file medium");
         assert_eq!(img.data.width, 2);
         assert_eq!(img.data.height, 2);
@@ -3768,14 +3780,15 @@ mod tests {
         let mut term = Term::new(Config::default(), &size, VoidListener);
 
         let b64 = make_rgba_b64(1, 1, 0, 0, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=1,v=1,i=3,I=200;{b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=1,v=1,i=3,I=200;{b64}\x1b\\").as_bytes());
         assert!(term.graphics.kitty_state.get_image(3).is_some());
 
         // Delete by image number.
         feed_bytes(&mut term, b"\x1b_Ga=d,d=n,I=200\x1b\\");
-        assert!(term.graphics.kitty_state.get_image(3).is_none(),
-            "image should be deleted via number mapping");
+        assert!(
+            term.graphics.kitty_state.get_image(3).is_none(),
+            "image should be deleted via number mapping"
+        );
         assert_eq!(term.graphics.kitty_state.resolve_number(200), None);
     }
 
@@ -3786,14 +3799,12 @@ mod tests {
 
         // Store a 1x1 image.
         let b64_small = make_rgba_b64(1, 1, 255, 0, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=1,v=1,i=8;{b64_small}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=1,v=1,i=8;{b64_small}\x1b\\").as_bytes());
         assert_eq!(term.graphics.kitty_state.get_image(8).unwrap().data.pixels.len(), 4);
 
         // Replace with a 2x2 image using the same ID.
         let b64_big = make_rgba_b64(2, 2, 0, 255, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=2,v=2,i=8;{b64_big}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=2,v=2,i=8;{b64_big}\x1b\\").as_bytes());
         let img = term.graphics.kitty_state.get_image(8).unwrap();
         assert_eq!(img.data.width, 2);
         assert_eq!(img.data.height, 2);
@@ -3806,12 +3817,10 @@ mod tests {
         let mut term = Term::new(Config::default(), &size, VoidListener);
 
         let b64 = make_rgba_b64(1, 1, 255, 0, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=q,f=32,i=42;{b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=q,f=32,i=42;{b64}\x1b\\").as_bytes());
 
         // Query should validate but NOT store the image.
-        assert!(term.graphics.kitty_state.get_image(42).is_none(),
-            "query should not store images");
+        assert!(term.graphics.kitty_state.get_image(42).is_none(), "query should not store images");
         assert!(term.graphics.kitty_state.images.is_empty());
     }
 
@@ -3822,22 +3831,26 @@ mod tests {
 
         // Transmit a base image.
         let b64 = make_rgba_b64(2, 2, 255, 0, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=T,f=32,s=2,v=2,i=30;{b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=T,f=32,s=2,v=2,i=30;{b64}\x1b\\").as_bytes());
         assert!(term.graphics.kitty_state.get_image(30).is_some());
-        assert!(term.graphics.kitty_state.get_animation(30).is_none(),
-            "no animation state before first frame");
+        assert!(
+            term.graphics.kitty_state.get_animation(30).is_none(),
+            "no animation state before first frame"
+        );
 
         // Send an animation frame (a=f) with 100ms gap.
         let frame_b64 = make_rgba_b64(2, 2, 0, 255, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=f,i=30,f=32,s=2,v=2,z=100;{frame_b64}\x1b\\").as_bytes());
+        feed_bytes(
+            &mut term,
+            format!("\x1b_Ga=f,i=30,f=32,s=2,v=2,z=100;{frame_b64}\x1b\\").as_bytes(),
+        );
 
-        assert!(term.graphics.kitty_state.get_animation(30).is_some(),
-            "animation state should exist after frame transmit");
+        assert!(
+            term.graphics.kitty_state.get_animation(30).is_some(),
+            "animation state should exist after frame transmit"
+        );
         let anim = term.graphics.kitty_state.get_animation(30).unwrap();
-        assert!(anim.frames.len() >= 2,
-            "should have at least 2 frames (original + new)");
+        assert!(anim.frames.len() >= 2, "should have at least 2 frames (original + new)");
     }
 
     #[test]
@@ -3847,18 +3860,18 @@ mod tests {
 
         // Transmit image + animation frame.
         let b64 = make_rgba_b64(1, 1, 255, 0, 0, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=T,f=32,s=1,v=1,i=40;{b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=T,f=32,s=1,v=1,i=40;{b64}\x1b\\").as_bytes());
         let frame_b64 = make_rgba_b64(1, 1, 0, 0, 255, 255);
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=f,i=40,f=32,s=1,v=1;{frame_b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=f,i=40,f=32,s=1,v=1;{frame_b64}\x1b\\").as_bytes());
         assert!(term.graphics.kitty_state.get_animation(40).is_some());
 
         // Delete by ID should also clear animation.
         feed_bytes(&mut term, b"\x1b_Ga=d,d=i,i=40\x1b\\");
         assert!(term.graphics.kitty_state.get_image(40).is_none());
-        assert!(term.graphics.kitty_state.get_animation(40).is_none(),
-            "animation state should be cleared on delete");
+        assert!(
+            term.graphics.kitty_state.get_animation(40).is_none(),
+            "animation state should be cleared on delete"
+        );
     }
 
     #[test]
@@ -3870,12 +3883,9 @@ mod tests {
         let b64_1x1 = make_rgba_b64(1, 1, 255, 0, 0, 255); // 4 bytes
         let b64_2x2 = make_rgba_b64(2, 2, 0, 255, 0, 255); // 16 bytes
         let b64_3x3 = make_rgba_b64(3, 3, 0, 0, 255, 255); // 36 bytes
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=1,v=1,i=1;{b64_1x1}\x1b\\").as_bytes());
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=2,v=2,i=2;{b64_2x2}\x1b\\").as_bytes());
-        feed_bytes(&mut term,
-            format!("\x1b_Ga=t,f=32,s=3,v=3,i=3;{b64_3x3}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=1,v=1,i=1;{b64_1x1}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=2,v=2,i=2;{b64_2x2}\x1b\\").as_bytes());
+        feed_bytes(&mut term, format!("\x1b_Ga=t,f=32,s=3,v=3,i=3;{b64_3x3}\x1b\\").as_bytes());
 
         assert_eq!(term.graphics.kitty_state.images.len(), 3);
         assert_eq!(term.graphics.kitty_state.used_memory, 4 + 16 + 36);
@@ -3888,5 +3898,59 @@ mod tests {
         // Delete all, verify zero.
         feed_bytes(&mut term, b"\x1b_Ga=d,d=a\x1b\\");
         assert_eq!(term.graphics.kitty_state.used_memory, 0);
+    }
+
+    #[test]
+    fn kitty_delete_releases_rendered_texture() {
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.graphics.cell_width = 8.;
+        term.graphics.cell_height = 16.;
+        let b64 = make_rgba_b64(2, 2, 255, 0, 0, 255);
+        feed_bytes(&mut term, format!("\x1b_Ga=T,f=32,s=2,v=2,i=10;{b64}\x1b\\").as_bytes());
+        let updates = term.graphics.take_queues().unwrap();
+        let texture_id = updates.pending[0].id;
+        assert!(term.grid()[Line(0)][Column(0)].graphics().is_some());
+        feed_bytes(&mut term, b"\x1b_Ga=d,d=I,i=10\x1b\\");
+        assert!(
+            term.grid()[Line(0)][Column(0)].graphics().is_none(),
+            "deleted Kitty image remains in renderable grid"
+        );
+        let updates = term.graphics.take_queues().expect("GPU removal must be queued");
+        assert!(updates.remove_queue.contains(&texture_id));
+    }
+
+    #[test]
+    fn kitty_delete_is_selective_and_cancels_pending_uploads() {
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.graphics.cell_width = 8.;
+        term.graphics.cell_height = 16.;
+        let b64 = make_rgba_b64(2, 2, 255, 0, 0, 255);
+        for id in [10, 20] {
+            feed_bytes(&mut term, format!("\x1b_Ga=T,f=32,s=2,v=2,i={id};{b64}\x1b\\").as_bytes());
+        }
+        feed_bytes(&mut term, b"\x1b_Ga=d,d=I,i=10\x1b\\");
+        assert!(term.grid()[Line(0)][Column(0)].graphics().is_none());
+        assert!(term.grid()[Line(1)][Column(0)].graphics().is_some());
+        let updates = term.graphics.take_queues().unwrap();
+        assert_eq!(updates.pending.len(), 1);
+        assert!(!updates.remove_queue.contains(&updates.pending[0].id));
+    }
+
+    #[test]
+    fn kitty_delete_all_preserves_sixel() {
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.graphics.cell_width = 8.;
+        term.graphics.cell_height = 16.;
+        let b64 = make_rgba_b64(2, 2, 255, 0, 0, 255);
+        feed_bytes(&mut term, format!("\x1b_Ga=T,f=32,s=2,v=2,i=10;{b64}\x1b\\").as_bytes());
+        feed_bytes(&mut term, b"\x1bPq#0;2;100;0;0~\x1b\\");
+        assert!(term.grid()[Line(1)][Column(0)].graphics().is_some());
+        feed_bytes(&mut term, b"\x1b_Ga=d,d=A\x1b\\");
+        assert!(term.grid()[Line(0)][Column(0)].graphics().is_none());
+        assert!(term.grid()[Line(1)][Column(0)].graphics().is_some());
+        assert_eq!(term.graphics.take_queues().unwrap().pending.len(), 1);
     }
 }

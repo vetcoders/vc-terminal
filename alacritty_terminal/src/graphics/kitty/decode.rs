@@ -5,14 +5,14 @@
 //! Supported transmission mediums:
 //! - `Direct` (`t=d`): inline base64 payload
 //! - `File` (`t=f`): base64-encoded file path
-//! - `TempFile` (`t=t`): base64-encoded absolute or relative path; canonicalized and verified within a known temp dir
+//! - `TempFile` (`t=t`): base64-encoded absolute or relative path; canonicalized and verified
+//!   within a known temp dir
 //! - `SharedMemory` (`t=s`): base64-encoded POSIX shm object name (unix only)
 
 use std::io::Read;
 
-use base64::Engine;
-use base64::alphabet;
-use base64::engine::{GeneralPurpose, GeneralPurposeConfig, DecodePaddingMode};
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::{Engine, alphabet};
 
 /// Lenient base64 decoder: accepts both padded and unpadded input.
 ///
@@ -76,7 +76,9 @@ pub fn decode_payload(cmd: &KittyCommand, raw_payload: &[u8]) -> Result<GraphicD
         match cmd.medium {
             Medium::Direct => decode_direct_payload(raw_payload)?,
             Medium::File => read_file_payload(raw_payload, cmd.data_offset, cmd.data_size, false)?,
-            Medium::TempFile => read_file_payload(raw_payload, cmd.data_offset, cmd.data_size, true)?,
+            Medium::TempFile => {
+                read_file_payload(raw_payload, cmd.data_offset, cmd.data_size, true)?
+            },
             #[cfg(unix)]
             Medium::SharedMemory => read_shm_payload(raw_payload, cmd.data_offset, cmd.data_size)?,
             #[cfg(not(unix))]
@@ -93,9 +95,7 @@ pub fn decode_payload(cmd: &KittyCommand, raw_payload: &[u8]) -> Result<GraphicD
 /// intermediate chunks include trailing padding characters.
 fn decode_direct_payload(raw_payload: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let cleaned: Vec<u8> = raw_payload.iter().copied().filter(|&b| b != b'=').collect();
-    BASE64
-        .decode(&cleaned)
-        .map_err(|e| DecodeError::Base64(e.to_string()))
+    BASE64.decode(&cleaned).map_err(|e| DecodeError::Base64(e.to_string()))
 }
 
 /// Read payload from a file path (Medium::File or Medium::TempFile).
@@ -114,16 +114,17 @@ fn read_file_payload(
 ) -> Result<Vec<u8>, DecodeError> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let path_bytes = BASE64
-        .decode(raw_payload)
-        .map_err(|e| DecodeError::Base64(e.to_string()))?;
+    let path_bytes = BASE64.decode(raw_payload).map_err(|e| DecodeError::Base64(e.to_string()))?;
     let path_str = String::from_utf8(path_bytes)
         .map_err(|e| DecodeError::IoError(format!("invalid UTF-8 in path: {e}")))?;
 
     let resolved_path = if is_temp {
         let raw = std::path::Path::new(&path_str);
-        let candidate =
-            if raw.is_absolute() { raw.to_path_buf() } else { std::env::temp_dir().join(&path_str) };
+        let candidate = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            std::env::temp_dir().join(&path_str)
+        };
         let canonical = std::fs::canonicalize(&candidate)
             .map_err(|e| DecodeError::IoError(format!("canonicalize {:?}: {e}", candidate)))?;
         if !known_temp_dirs().iter().any(|d| canonical.starts_with(d)) {
@@ -153,8 +154,7 @@ fn read_file_payload(
 
     let data = if data_size > 0 {
         let mut buf = vec![0u8; data_size as usize];
-        file.read_exact(&mut buf)
-            .map_err(|e| DecodeError::IoError(format!("read_exact: {e}")))?;
+        file.read_exact(&mut buf).map_err(|e| DecodeError::IoError(format!("read_exact: {e}")))?;
         buf
     } else {
         let mut buf = Vec::new();
@@ -226,9 +226,7 @@ fn read_shm_payload(
 ) -> Result<Vec<u8>, DecodeError> {
     use std::ffi::CString;
 
-    let name_bytes = BASE64
-        .decode(raw_payload)
-        .map_err(|e| DecodeError::Base64(e.to_string()))?;
+    let name_bytes = BASE64.decode(raw_payload).map_err(|e| DecodeError::Base64(e.to_string()))?;
     let name_str = String::from_utf8(name_bytes)
         .map_err(|e| DecodeError::IoError(format!("invalid UTF-8 in shm name: {e}")))?;
 
@@ -308,9 +306,7 @@ fn decode_raw_bytes(cmd: &KittyCommand, raw: Vec<u8>) -> Result<GraphicData, Dec
         Compression::Zlib => {
             let mut decoder = ZlibDecoder::new(&raw[..]);
             let mut buf = Vec::new();
-            decoder
-                .read_to_end(&mut buf)
-                .map_err(|e| DecodeError::Zlib(e.to_string()))?;
+            decoder.read_to_end(&mut buf).map_err(|e| DecodeError::Zlib(e.to_string()))?;
             buf
         },
         Compression::None => raw,
@@ -478,9 +474,8 @@ mod tests {
 
     #[test]
     fn decode_raw_rgba() {
-        let pixels: Vec<u8> = vec![
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
-        ];
+        let pixels: Vec<u8> =
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
         let encoded = BASE64.encode(&pixels);
         let cmd = KittyCommand {
             format: Format::Rgba,
@@ -512,7 +507,7 @@ mod tests {
 
     #[test]
     fn decode_dimension_mismatch_too_short() {
-        let encoded = BASE64.encode(&[0u8; 10]);
+        let encoded = BASE64.encode([0u8; 10]);
         let cmd = KittyCommand {
             format: Format::Rgba,
             width: 2,
@@ -527,10 +522,8 @@ mod tests {
     fn decode_raw_truncates_slightly_over() {
         // Simulates chafa sending 1 extra byte beyond the expected size.
         // 2x2 RGBA = 16 bytes expected. Send 17 bytes — should truncate.
-        let mut pixels: Vec<u8> = vec![
-            255, 0, 0, 255, 0, 255, 0, 255,
-            0, 0, 255, 255, 255, 255, 255, 255,
-        ];
+        let mut pixels: Vec<u8> =
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
         let expected = pixels.clone();
         pixels.push(0xDE); // 1 extra trailing byte
 
@@ -600,7 +593,7 @@ mod tests {
 
     #[test]
     fn decode_missing_dimensions() {
-        let encoded = BASE64.encode(&[0u8; 16]);
+        let encoded = BASE64.encode([0u8; 16]);
         let cmd = KittyCommand {
             format: Format::Rgba,
             width: 0,
@@ -664,10 +657,8 @@ mod tests {
         // Simulates chunked transfer where intermediate chunks include
         // trailing `=` padding (as chafa does). When chunks are merged,
         // `=` ends up in the middle of the base64 string.
-        let pixels: Vec<u8> = vec![
-            255, 0, 0, 255, 0, 255, 0, 255,
-            0, 0, 255, 255, 255, 255, 255, 255,
-        ];
+        let pixels: Vec<u8> =
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
         let full_b64 = BASE64.encode(&pixels);
 
         // Split the base64 in the middle and add `=` padding to chunk 1,
@@ -679,8 +670,11 @@ mod tests {
         let merged_with_padding = format!("{chunk1}=={chunk2}");
 
         let cmd = KittyCommand {
-            format: Format::Rgba, width: 2, height: 2,
-            payload: merged_with_padding.into_bytes(), ..Default::default()
+            format: Format::Rgba,
+            width: 2,
+            height: 2,
+            payload: merged_with_padding.into_bytes(),
+            ..Default::default()
         };
         let data = decode_payload(&cmd, &cmd.payload).unwrap();
         assert_eq!(data.width, 2);
@@ -696,8 +690,11 @@ mod tests {
         assert!(b64_padded.contains('='), "test expects padded base64");
 
         let cmd = KittyCommand {
-            format: Format::Rgba, width: 0, height: 0,
-            payload: b64_padded.into_bytes(), ..Default::default()
+            format: Format::Rgba,
+            width: 0,
+            height: 0,
+            payload: b64_padded.into_bytes(),
+            ..Default::default()
         };
         // Will fail on dimension check, but should NOT fail on base64 decode.
         let err = decode_payload(&cmd, &cmd.payload).unwrap_err();
@@ -836,7 +833,10 @@ mod tests {
         assert_eq!(data.pixels, pixels);
 
         // File name lacks "tty-graphics-protocol" — must not be deleted.
-        assert!(file_path.exists(), "file should NOT be deleted when name lacks tty-graphics-protocol");
+        assert!(
+            file_path.exists(),
+            "file should NOT be deleted when name lacks tty-graphics-protocol"
+        );
         let _ = std::fs::remove_file(&file_path);
     }
 
@@ -1001,11 +1001,7 @@ mod tests {
         fn create_shm(name: &str, data: &[u8]) -> CString {
             let c_name = CString::new(name).unwrap();
             unsafe {
-                let fd = libc::shm_open(
-                    c_name.as_ptr(),
-                    libc::O_CREAT | libc::O_RDWR,
-                    0o600,
-                );
+                let fd = libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
                 assert!(fd >= 0, "shm_open failed: {}", std::io::Error::last_os_error());
 
                 let ret = libc::ftruncate(fd, data.len() as libc::off_t);
@@ -1147,5 +1143,4 @@ mod tests {
             assert!(err.is_err(), "nonexistent shm should error");
         }
     }
-
 }

@@ -60,9 +60,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "smallvec",
-
  "signal-hook",
+ "smallvec",
  "tempfile",
  "toml",
  "toml_edit 0.24.0+spec-1.1.0",
@@ -1381,7 +1380,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
 dependencies = [
  "windows-sys 0.60.2",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1392,7 +1390,6 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
-
 ]
 
 [[package]]

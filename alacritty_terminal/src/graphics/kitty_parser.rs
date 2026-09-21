@@ -351,10 +351,7 @@ impl KittyApcBuffer {
     /// Create a new empty APC buffer.
     #[must_use]
     pub fn new() -> Self {
-        KittyApcBuffer {
-            buf: Vec::with_capacity(8192),
-            is_kitty: None,
-        }
+        KittyApcBuffer { buf: Vec::with_capacity(8192), is_kitty: None }
     }
 
     /// Reset the buffer for a new APC sequence.
@@ -749,12 +746,12 @@ mod tests {
     fn apc_buffer_kitty_sequence() {
         let mut buf = KittyApcBuffer::new();
         buf.start();
-        
+
         // Simulate bytes: G a = T , f = 1 0 0 ; d a t a
         for &b in b"Ga=T,f=100;data" {
             buf.put(b);
         }
-        
+
         let cmd = buf.finish().unwrap();
         assert_eq!(cmd.action, Action::TransmitAndDisplay);
         assert_eq!(cmd.format, Format::Png);
@@ -765,7 +762,7 @@ mod tests {
     fn apc_buffer_non_kitty_sequence() {
         let mut buf = KittyApcBuffer::new();
         buf.start();
-        
+
         // Not starting with 'G'.
         assert!(!buf.put(b'X'));
         assert!(buf.finish().is_none());
@@ -774,7 +771,7 @@ mod tests {
     #[test]
     fn apc_buffer_reuse() {
         let mut buf = KittyApcBuffer::new();
-        
+
         // First sequence.
         buf.start();
         for &b in b"Ga=q,i=1" {
@@ -782,7 +779,7 @@ mod tests {
         }
         let cmd = buf.finish().unwrap();
         assert_eq!(cmd.action, Action::Query);
-        
+
         // Second sequence (reuse buffer).
         buf.start();
         for &b in b"Ga=d,d=a" {

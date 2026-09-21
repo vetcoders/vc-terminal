@@ -53,8 +53,7 @@ pub fn dispatch_command<L: EventListener>(term: &mut Term<L>, cmd: KittyCommand)
         },
         Action::TransmitAndDisplay => {
             let result = handle_transmit_and_display(term, &cmd);
-            let resolved_id =
-                if image_id != 0 { image_id } else { cmd.image_number };
+            let resolved_id = if image_id != 0 { image_id } else { cmd.image_number };
             send_response(term.event_proxy(), quiet, resolved_id, &result);
         },
         Action::Query => {
@@ -68,11 +67,8 @@ pub fn dispatch_command<L: EventListener>(term: &mut Term<L>, cmd: KittyCommand)
             handle_delete(term, &cmd);
         },
         Action::TransmitFrame => {
-            let result = animation::load_animation_frame(
-                &mut term.graphics.kitty_state,
-                &cmd,
-                &cmd.payload,
-            );
+            let result =
+                animation::load_animation_frame(&mut term.graphics.kitty_state, &cmd, &cmd.payload);
             send_response(term.event_proxy(), quiet, image_id, &result);
         },
         Action::AnimationControl => {
@@ -105,9 +101,8 @@ fn decode_chunk_payload(medium: Medium, payload: &[u8]) -> Vec<u8> {
     // Decode this chunk's base64 independently. This handles clients
     // like chafa that base64-encode each chunk separately (with padding)
     // rather than splitting one big base64 string across chunks.
-    use base64::Engine;
-    use base64::alphabet;
-    use base64::engine::{GeneralPurpose, GeneralPurposeConfig, DecodePaddingMode};
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::{Engine, alphabet};
 
     const B64: GeneralPurpose = GeneralPurpose::new(
         &alphabet::STANDARD,
@@ -130,17 +125,15 @@ fn handle_chunk_start<L: EventListener>(term: &mut Term<L>, cmd: KittyCommand) {
     match &mut term.graphics.kitty_state.loading {
         Some(loading) => {
             loading.data.extend_from_slice(&decoded);
-            trace!(
-                "[kitty] chunk appended, total decoded: {} bytes",
-                loading.data.len()
-            );
+            trace!("[kitty] chunk appended, total decoded: {} bytes", loading.data.len());
         },
         None => {
-            trace!("[kitty] starting chunked transfer, first chunk: {} decoded bytes", decoded.len());
-            term.graphics.kitty_state.loading = Some(KittyLoadingImage {
-                command: cmd,
-                data: decoded,
-            });
+            trace!(
+                "[kitty] starting chunked transfer, first chunk: {} decoded bytes",
+                decoded.len()
+            );
+            term.graphics.kitty_state.loading =
+                Some(KittyLoadingImage { command: cmd, data: decoded });
         },
     }
 }
@@ -163,10 +156,7 @@ fn finalize_chunked(mut loading: KittyLoadingImage, final_cmd: KittyCommand) -> 
 // ── Action Handlers ────────────────────────────────────────────────────
 
 /// Handle `a=t` (transmit only, don't display).
-fn handle_transmit<L: EventListener>(
-    term: &mut Term<L>,
-    cmd: &KittyCommand,
-) -> Result<(), String> {
+fn handle_transmit<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) -> Result<(), String> {
     let graphic_data = decode_payload(cmd, &cmd.payload).map_err(|e| e.to_string())?;
     let image_id = resolve_or_assign_id(term, cmd);
     term.graphics.kitty_state.store_image(image_id, graphic_data);
@@ -194,11 +184,8 @@ fn handle_query<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) {
 
     let image_id = if cmd.image_id != 0 { cmd.image_id } else { 1 };
 
-    let result = if cmd.payload.is_empty() {
-        Ok(())
-    } else {
-        decode_payload(cmd, &cmd.payload).map(|_| ())
-    };
+    let result =
+        if cmd.payload.is_empty() { Ok(()) } else { decode_payload(cmd, &cmd.payload).map(|_| ()) };
 
     match result {
         Ok(()) => {
@@ -215,10 +202,7 @@ fn handle_query<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) {
 }
 
 /// Handle `a=p` (display a previously transmitted image).
-fn handle_display<L: EventListener>(
-    term: &mut Term<L>,
-    cmd: &KittyCommand,
-) -> Result<(), String> {
+fn handle_display<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) -> Result<(), String> {
     let image_id = resolve_image_id(&term.graphics.kitty_state, cmd)
         .ok_or_else(|| "image not found".to_string())?;
 
@@ -234,7 +218,85 @@ fn handle_delete<L: EventListener>(term: &mut Term<L>, cmd: &KittyCommand) {
     let target = cmd.delete.unwrap_or(DeleteTarget::All);
     let cursor_col = term.grid().cursor.point.column.0;
     let cursor_row = term.grid().cursor.point.line.0 as usize;
-    debug!("[kitty] delete: {target:?}, image_id={}, image_number={}", cmd.image_id, cmd.image_number);
+    debug!(
+        "[kitty] delete: {target:?}, image_id={}, image_number={}",
+        cmd.image_id, cmd.image_number
+    );
+    // Select actual rendered placements, using current grid coordinates so scrolling
+    // and reflow cannot leave a second, stale placement registry authoritative.
+    use crate::grid::Dimensions;
+    use crate::index::{Column, Line};
+    use crate::term::cell::Flags;
+    use std::collections::HashSet;
+
+    let mut removed = HashSet::new();
+    let first_line = -(term.grid().history_size() as i32);
+    let last_line = term.screen_lines() as i32;
+    let number_id = term.graphics.kitty_state.resolve_number(cmd.image_number);
+    let x = if cmd.src_x == 0 { cursor_col } else { cmd.src_x as usize - 1 };
+    let y = if cmd.src_y == 0 { cursor_row as i32 } else { cmd.src_y as i32 - 1 };
+    for row in first_line..last_line {
+        for col in 0..term.columns() {
+            let Some(graphics) = term.grid()[Line(row)][Column(col)].graphics() else { continue };
+            for graphic in graphics {
+                let Some((image_id, placement_id, z)) = graphic.texture.kitty else { continue };
+                let matches = match target {
+                    DeleteTarget::All | DeleteTarget::AllIncludingScrollback => true,
+                    DeleteTarget::ById | DeleteTarget::ByIdIncludingScrollback => {
+                        image_id == cmd.image_id
+                            && (cmd.placement_id == 0 || placement_id == cmd.placement_id)
+                    },
+                    DeleteTarget::ByNumber | DeleteTarget::ByNumberIncludingScrollback => {
+                        Some(image_id) == number_id
+                    },
+                    DeleteTarget::ByPlacementId
+                    | DeleteTarget::ByPlacementIdIncludingScrollback => {
+                        placement_id == cmd.placement_id
+                            && (cmd.image_id == 0 || image_id == cmd.image_id)
+                    },
+                    DeleteTarget::AtCursor | DeleteTarget::AtCursorIncludingScrollback => {
+                        col == cursor_col && row == cursor_row as i32
+                    },
+                    DeleteTarget::ByColumn | DeleteTarget::ByColumnIncludingScrollback => col == x,
+                    DeleteTarget::ByRow | DeleteTarget::ByRowIncludingScrollback => row == y,
+                    DeleteTarget::ByCell | DeleteTarget::ByCellIncludingScrollback => {
+                        col == x && row == y
+                    },
+                    DeleteTarget::ByCellZ | DeleteTarget::ByCellZIncludingScrollback => {
+                        col == x && row == y && z == cmd.z_index
+                    },
+                    DeleteTarget::ByZIndex | DeleteTarget::ByZIndexIncludingScrollback => {
+                        z == cmd.z_index
+                    },
+                    DeleteTarget::AnimationFrames
+                    | DeleteTarget::AnimationFramesIncludingScrollback => false,
+                };
+                if matches {
+                    removed.insert(graphic.texture.id);
+                }
+            }
+        }
+    }
+    for row in first_line..last_line {
+        let mut changed = false;
+        for col in 0..term.columns() {
+            let cell = &mut term.grid_mut()[Line(row)][Column(col)];
+            let Some(mut graphics) = cell.take_graphics() else { continue };
+            let len = graphics.len();
+            graphics.retain(|g| !removed.contains(&g.texture.id));
+            changed |= len != graphics.len();
+            if graphics.is_empty() {
+                cell.flags.remove(Flags::GRAPHICS);
+            } else {
+                cell.set_graphics(graphics);
+            }
+        }
+        if changed && row >= 0 {
+            term.mark_line_damaged(Line(row));
+        }
+    }
+    // A transmit/delete sequence may arrive before the renderer consumes uploads.
+    term.graphics.pending.retain(|g| !removed.contains(&g.id));
     term.graphics.kitty_state.delete(target, cmd, cursor_col, cursor_row);
 }
 
@@ -261,10 +323,7 @@ mod tests {
         use base64::Engine;
         let final_bytes = vec![0xBE, 0xEF];
         let final_b64 = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
-        let final_cmd = KittyCommand {
-            payload: final_b64.into_bytes(),
-            ..Default::default()
-        };
+        let final_cmd = KittyCommand { payload: final_b64.into_bytes(), ..Default::default() };
 
         let merged = finalize_chunked(loading, final_cmd);
         assert_eq!(merged.action, Action::TransmitAndDisplay);

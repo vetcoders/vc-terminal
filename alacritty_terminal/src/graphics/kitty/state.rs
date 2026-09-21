@@ -2,11 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-
-
 use super::animation::AnimationState;
-use crate::graphics::kitty_parser::{DeleteTarget, KittyCommand};
 use crate::graphics::GraphicData;
+use crate::graphics::kitty_parser::{DeleteTarget, KittyCommand};
 
 /// Maximum total memory for kitty image storage (320 MiB).
 const STORAGE_QUOTA: usize = 320 * 1024 * 1024;
@@ -336,17 +334,14 @@ impl KittyState {
                 let col = Self::resolve_col(cmd.src_x, cursor_col);
                 let row = Self::resolve_row(cmd.src_y, cursor_row);
                 let z = cmd.z_index;
-                self.remove_placements_matching(|p| {
-                    p.overlaps_cell(col, row) && p.z_index == z
-                });
+                self.remove_placements_matching(|p| p.overlaps_cell(col, row) && p.z_index == z);
             },
             DeleteTarget::ByCellZIncludingScrollback => {
                 let col = Self::resolve_col(cmd.src_x, cursor_col);
                 let row = Self::resolve_row(cmd.src_y, cursor_row);
                 let z = cmd.z_index;
-                let removed = self.remove_placements_matching(|p| {
-                    p.overlaps_cell(col, row) && p.z_index == z
-                });
+                let removed = self
+                    .remove_placements_matching(|p| p.overlaps_cell(col, row) && p.z_index == z);
                 self.remove_orphaned_images(&removed);
             },
 
@@ -362,8 +357,7 @@ impl KittyState {
             },
 
             // ── Animation frames ──────────────────────────────────────
-            DeleteTarget::AnimationFrames
-            | DeleteTarget::AnimationFramesIncludingScrollback => {
+            DeleteTarget::AnimationFrames | DeleteTarget::AnimationFramesIncludingScrollback => {
                 if cmd.image_id != 0 {
                     self.animation_states.remove(&cmd.image_id);
                 }
@@ -411,19 +405,49 @@ mod tests {
         state.number_to_id.insert(200, 2);
 
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 3, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 3,
+            height: 2,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 11, col: 5, row: 5, width: 2, height: 2, z_index: 1,
+            image_id: 1,
+            placement_id: 11,
+            col: 5,
+            row: 5,
+            width: 2,
+            height: 2,
+            z_index: 1,
         });
         state.register_placement(KittyPlacement {
-            image_id: 2, placement_id: 20, col: 2, row: 1, width: 4, height: 3, z_index: 0,
+            image_id: 2,
+            placement_id: 20,
+            col: 2,
+            row: 1,
+            width: 4,
+            height: 3,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 3, placement_id: 30, col: 8, row: 0, width: 1, height: 1, z_index: -1,
+            image_id: 3,
+            placement_id: 30,
+            col: 8,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: -1,
         });
         state.register_placement(KittyPlacement {
-            image_id: 3, placement_id: 31, col: 0, row: 4, width: 10, height: 1, z_index: 2,
+            image_id: 3,
+            placement_id: 31,
+            col: 0,
+            row: 4,
+            width: 10,
+            height: 1,
+            z_index: 2,
         });
 
         assert_eq!(state.placements.len(), 5);
@@ -454,7 +478,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(10, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 10, placement_id: 1, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 10,
+            placement_id: 1,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
         assert!(state.get_image(10).is_some());
 
@@ -471,7 +501,13 @@ mod tests {
         for id in 1..=5 {
             state.store_image(id, make_graphic(4));
             state.register_placement(KittyPlacement {
-                image_id: id, placement_id: id, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+                image_id: id,
+                placement_id: id,
+                col: 0,
+                row: 0,
+                width: 1,
+                height: 1,
+                z_index: 0,
             });
         }
         assert_eq!(state.images.len(), 5);
@@ -501,7 +537,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 42, col: 3, row: 5, width: 2, height: 4, z_index: -1,
+            image_id: 1,
+            placement_id: 42,
+            col: 3,
+            row: 5,
+            width: 2,
+            height: 4,
+            z_index: -1,
         });
 
         assert_eq!(state.placements.len(), 1);
@@ -520,7 +562,13 @@ mod tests {
     #[test]
     fn placement_overlap_col() {
         let p = KittyPlacement {
-            image_id: 1, placement_id: 0, col: 2, row: 0, width: 3, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 0,
+            col: 2,
+            row: 0,
+            width: 3,
+            height: 1,
+            z_index: 0,
         };
         assert!(!p.overlaps_col(1));
         assert!(p.overlaps_col(2));
@@ -532,7 +580,13 @@ mod tests {
     #[test]
     fn placement_overlap_row() {
         let p = KittyPlacement {
-            image_id: 1, placement_id: 0, col: 0, row: 3, width: 1, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 0,
+            col: 0,
+            row: 3,
+            width: 1,
+            height: 2,
+            z_index: 0,
         };
         assert!(!p.overlaps_row(2));
         assert!(p.overlaps_row(3));
@@ -543,7 +597,13 @@ mod tests {
     #[test]
     fn placement_overlap_cell() {
         let p = KittyPlacement {
-            image_id: 1, placement_id: 0, col: 1, row: 1, width: 3, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 0,
+            col: 1,
+            row: 1,
+            width: 3,
+            height: 2,
+            z_index: 0,
         };
         assert!(p.overlaps_cell(2, 2));
         assert!(!p.overlaps_cell(0, 0));
@@ -575,7 +635,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(16));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 2, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 2,
+            height: 2,
+            z_index: 0,
         });
 
         let cmd = default_cmd();
@@ -592,10 +658,22 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(16));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 2, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 2,
+            height: 2,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 11, col: 5, row: 5, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 11,
+            col: 5,
+            row: 5,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
 
         // Cursor at (0, 0) hits placement 10 but not 11.
@@ -630,10 +708,22 @@ mod tests {
         state.store_image(2, make_graphic(4));
         // Two placements with the same placement_id but different image_ids.
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 99, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 99,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 2, placement_id: 99, col: 1, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 2,
+            placement_id: 99,
+            col: 1,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
 
         // Delete placement_id=99 with image_id=1 — should only remove the first.
@@ -649,7 +739,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(8));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 50, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 50,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
 
         let cmd = KittyCommand { placement_id: 50, ..default_cmd() };
@@ -682,7 +778,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 1, height: 1, z_index: 5,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 5,
         });
 
         let cmd = KittyCommand { z_index: 5, ..default_cmd() };
@@ -734,8 +836,7 @@ mod tests {
         state.delete(DeleteTarget::ByColumn, &cmd, 0, 0);
 
         assert_eq!(state.placements.len(), 3);
-        let remaining_ids: Vec<u32> =
-            state.placements.iter().map(|p| p.placement_id).collect();
+        let remaining_ids: Vec<u32> = state.placements.iter().map(|p| p.placement_id).collect();
         assert!(remaining_ids.contains(&10));
         assert!(remaining_ids.contains(&11));
         assert!(remaining_ids.contains(&30));
@@ -746,7 +847,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 3, row: 0, width: 2, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 3,
+            row: 0,
+            width: 2,
+            height: 1,
+            z_index: 0,
         });
 
         // Column 4 (1-based src_x=5) hits placement at col 3..5.
@@ -762,7 +869,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 5, row: 0, width: 2, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 5,
+            row: 0,
+            width: 2,
+            height: 1,
+            z_index: 0,
         });
 
         // src_x=0 means "use cursor column". Cursor at col=6.
@@ -794,7 +907,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 2, width: 1, height: 3, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 2,
+            width: 1,
+            height: 3,
+            z_index: 0,
         });
 
         // Row 3 (1-based src_y=4) hits placement at row 2..5.
@@ -810,7 +929,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 3, width: 1, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 3,
+            width: 1,
+            height: 2,
+            z_index: 0,
         });
 
         // src_y=0 means "use cursor row". Cursor at row=4.
@@ -840,7 +965,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 2, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 2,
+            height: 2,
+            z_index: 0,
         });
 
         let cmd = KittyCommand { src_x: 1, src_y: 1, ..default_cmd() };
@@ -855,7 +986,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 3, row: 4, width: 2, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 3,
+            row: 4,
+            width: 2,
+            height: 2,
+            z_index: 0,
         });
 
         // Both src_x=0, src_y=0 → use cursor at (4, 5).
@@ -896,7 +1033,13 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 2, height: 2, z_index: 7,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 2,
+            height: 2,
+            z_index: 7,
         });
 
         let cmd = KittyCommand { src_x: 1, src_y: 1, z_index: 7, ..default_cmd() };
@@ -948,14 +1091,32 @@ mod tests {
 
         // Two placements for image 1 at different z-indices.
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 11, col: 2, row: 2, width: 1, height: 1, z_index: 5,
+            image_id: 1,
+            placement_id: 11,
+            col: 2,
+            row: 2,
+            width: 1,
+            height: 1,
+            z_index: 5,
         });
         // One placement for image 2 at z=0.
         state.register_placement(KittyPlacement {
-            image_id: 2, placement_id: 20, col: 1, row: 1, width: 1, height: 1, z_index: 0,
+            image_id: 2,
+            placement_id: 20,
+            col: 1,
+            row: 1,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
 
         // Delete z=0 with scrollback — removes placements 10 and 20.
@@ -1005,10 +1166,22 @@ mod tests {
         let mut state = KittyState::default();
         state.store_image(1, make_graphic(4));
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: 0, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: 0,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 11, col: 1, row: 1, width: 1, height: 1, z_index: 0,
+            image_id: 1,
+            placement_id: 11,
+            col: 1,
+            row: 1,
+            width: 1,
+            height: 1,
+            z_index: 0,
         });
 
         let cmd = KittyCommand { image_id: 1, ..default_cmd() };
@@ -1037,7 +1210,13 @@ mod tests {
         state.store_image(1, make_graphic(4));
         // Placement in scrollback (negative row).
         state.register_placement(KittyPlacement {
-            image_id: 1, placement_id: 10, col: 0, row: -5, width: 3, height: 2, z_index: 0,
+            image_id: 1,
+            placement_id: 10,
+            col: 0,
+            row: -5,
+            width: 3,
+            height: 2,
+            z_index: 0,
         });
 
         // Cursor at row 0 — should not overlap a placement at row -5..-3.

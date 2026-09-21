@@ -14,8 +14,8 @@ use log::debug;
 
 use super::decode::decode_payload;
 use super::state::KittyState;
-use crate::graphics::kitty_parser::KittyCommand;
 use crate::graphics::ColorType;
+use crate::graphics::kitty_parser::KittyCommand;
 
 // ── Data Structures ────────────────────────────────────────────────────
 
@@ -198,10 +198,9 @@ fn background_to_rgba(bg: u32) -> [u8; 4] {
 fn ensure_rgba(pixels: &[u8], color_type: ColorType) -> Vec<u8> {
     match color_type {
         ColorType::Rgba => pixels.to_vec(),
-        ColorType::Rgb => pixels
-            .chunks_exact(3)
-            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
-            .collect(),
+        ColorType::Rgb => {
+            pixels.chunks_exact(3).flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255]).collect()
+        },
     }
 }
 
@@ -280,11 +279,8 @@ pub fn load_animation_frame(
     // Read animation parameters from overloaded parser fields.
     let frame_number = cmd.rows; // r= → frame to edit (1-based, 0 = append)
     let gap_ms = cmd.z_index.max(0) as u32; // z= → frame duration in ms
-    let compose_mode = if cmd.offset_x == 1 {
-        CompositionMode::AlphaBlend
-    } else {
-        CompositionMode::Overwrite
-    };
+    let compose_mode =
+        if cmd.offset_x == 1 { CompositionMode::AlphaBlend } else { CompositionMode::Overwrite };
     let background = cmd.offset_y; // Y= → background pixel color
     let base_frame = cmd.columns; // c= → base frame to copy from (1-based)
     let dest_x = cmd.src_x as usize; // x= → blit x position
@@ -298,10 +294,8 @@ pub fn load_animation_frame(
     // Lazy promotion: if no animation exists yet, create one from the existing image.
     if !state.animation_states.contains_key(&image_id) {
         // Use direct field access to avoid borrowing all of `state` through a method.
-        let img = state
-            .images
-            .get(&image_id)
-            .ok_or_else(|| format!("image id={image_id} not found"))?;
+        let img =
+            state.images.get(&image_id).ok_or_else(|| format!("image id={image_id} not found"))?;
 
         let first_pixels = ensure_rgba(&img.data.pixels, img.data.color_type);
         let first_frame = AnimationFrame {
@@ -313,9 +307,7 @@ pub fn load_animation_frame(
             background: 0,
         };
 
-        state
-            .animation_states
-            .insert(image_id, AnimationState::new(first_frame));
+        state.animation_states.insert(image_id, AnimationState::new(first_frame));
         debug!("[kitty] promoted image id={image_id} to animation");
     }
 
@@ -433,30 +425,17 @@ pub fn compose_frames(state: &mut KittyState, cmd: &KittyCommand) -> Result<(), 
         ));
     }
 
-    let compose_mode = if cmd.offset_x == 1 {
-        CompositionMode::AlphaBlend
-    } else {
-        CompositionMode::Overwrite
-    };
+    let compose_mode =
+        if cmd.offset_x == 1 { CompositionMode::AlphaBlend } else { CompositionMode::Overwrite };
 
     // Clone source pixels to avoid simultaneous mutable + immutable borrow.
     let src_pixels = anim.frames[src_idx].pixels.clone();
     let width = anim.frames[src_idx].width;
     let height = anim.frames[src_idx].height;
 
-    blit(
-        &mut anim.frames[target_idx].pixels,
-        &src_pixels,
-        width,
-        height,
-        compose_mode,
-        0,
-    );
+    blit(&mut anim.frames[target_idx].pixels, &src_pixels, width, height, compose_mode, 0);
 
-    debug!(
-        "[kitty] composed frame {} → {} for image id={image_id}",
-        src_frame_no, target_frame_no
-    );
+    debug!("[kitty] composed frame {} → {} for image id={image_id}", src_frame_no, target_frame_no);
 
     Ok(())
 }
@@ -521,8 +500,8 @@ mod tests {
     use super::*;
     use crate::graphics::kitty_parser::{Action, Format, KittyCommand};
     use crate::graphics::{ColorType, GraphicData, GraphicId};
-    use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
     /// Helper: create a simple animation frame with overwrite mode.
     fn make_frame(pixels: Vec<u8>, width: usize, height: usize, gap_ms: u32) -> AnimationFrame {
@@ -763,24 +742,27 @@ mod tests {
         state.animation_states.insert(1, AnimationState::new(frame));
 
         // Start (s=2 → Running).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, width: 2, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 1,
+            width: 2,
+            ..Default::default()
+        });
         assert_eq!(state.get_animation(1).unwrap().state, PlaybackState::Running);
 
         // Stop (s=1 → Stopped).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, width: 1, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 1,
+            width: 1,
+            ..Default::default()
+        });
         assert_eq!(state.get_animation(1).unwrap().state, PlaybackState::Stopped);
 
         // Loading (s=3 → Loading).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, width: 3, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 1,
+            width: 3,
+            ..Default::default()
+        });
         assert_eq!(state.get_animation(1).unwrap().state, PlaybackState::Loading);
     }
 
@@ -791,10 +773,11 @@ mod tests {
         state.animation_states.insert(1, AnimationState::new(frame));
 
         // Set loops to 5 (v=5, parsed as cmd.height).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, height: 5, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 1,
+            height: 5,
+            ..Default::default()
+        });
         assert_eq!(state.get_animation(1).unwrap().loops, 5);
     }
 
@@ -808,10 +791,7 @@ mod tests {
         state.animation_states.insert(1, anim);
 
         // Set current frame to 2 (r=2, parsed as cmd.rows, 1-based).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, rows: 2, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand { image_id: 1, rows: 2, ..Default::default() });
         assert_eq!(state.get_animation(1).unwrap().current_frame, 1); // 0-based.
     }
 
@@ -822,10 +802,11 @@ mod tests {
         state.animation_states.insert(1, AnimationState::new(frame));
 
         // Set gap_ms to 50 for current frame (z=50, parsed as cmd.z_index).
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 1, z_index: 50, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 1,
+            z_index: 50,
+            ..Default::default()
+        });
         assert_eq!(state.get_animation(1).unwrap().frames[0].gap_ms, 50);
     }
 
@@ -833,10 +814,11 @@ mod tests {
     fn control_animation_noop_for_missing_image() {
         let mut state = KittyState::default();
         // Should not panic or error for a non-existent image.
-        control_animation(
-            &mut state,
-            &KittyCommand { image_id: 999, width: 2, ..Default::default() },
-        );
+        control_animation(&mut state, &KittyCommand {
+            image_id: 999,
+            width: 2,
+            ..Default::default()
+        });
     }
 
     // ── 8. Frame promotion: KittyImage → AnimationState ─────────────
@@ -846,11 +828,7 @@ mod tests {
         let mut state = KittyState::default();
 
         // Store a 2×1 RGBA image (red + green pixels).
-        let original = make_graphic(
-            vec![255, 0, 0, 255, 0, 255, 0, 255],
-            2,
-            1,
-        );
+        let original = make_graphic(vec![255, 0, 0, 255, 0, 255, 0, 255], 2, 1);
         state.store_image(1, original);
 
         // No animation yet.
@@ -1035,9 +1013,9 @@ mod tests {
         // Compose frame 2 → frame 1 with alpha blend.
         let cmd = KittyCommand {
             image_id: 1,
-            columns: 2,   // c= source (50% white).
-            rows: 1,       // r= target (opaque black).
-            offset_x: 1,  // X=1 → alpha blend.
+            columns: 2,  // c= source (50% white).
+            rows: 1,     // r= target (opaque black).
+            offset_x: 1, // X=1 → alpha blend.
             ..Default::default()
         };
 
@@ -1073,12 +1051,7 @@ mod tests {
     fn compose_frames_no_animation() {
         let mut state = KittyState::default();
 
-        let cmd = KittyCommand {
-            image_id: 42,
-            columns: 1,
-            rows: 1,
-            ..Default::default()
-        };
+        let cmd = KittyCommand { image_id: 42, columns: 1, rows: 1, ..Default::default() };
 
         let result = compose_frames(&mut state, &cmd);
         assert!(result.is_err());

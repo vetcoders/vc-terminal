@@ -62,9 +62,6 @@ mod tests {
 
     #[test]
     fn error_response_format() {
-        assert_eq!(
-            error_response(42, "EINVAL", "bad image"),
-            "\x1b_Gi=42;EINVAL:bad image\x1b\\"
-        );
+        assert_eq!(error_response(42, "EINVAL", "bad image"), "\x1b_Gi=42;EINVAL:bad image\x1b\\");
     }
 }
