@@ -14,7 +14,7 @@ use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{Term, TermMode};
 
 use crate::config::UiConfig;
-use crate::config::ui_config::{Hint, HintAction};
+use crate::config::ui_config::{Hint, HintAction, HintMouse};
 
 /// Maximum number of linewraps followed outside of the viewport during search highlighting.
 pub const MAX_SEARCH_LINES: usize = 100;
@@ -396,11 +396,8 @@ pub fn highlighted_at<T>(
 
     config.hints.enabled.iter().find_map(|hint| {
         // Check if all required modifiers are pressed.
-        let highlight = hint.mouse.is_some_and(|mouse| {
-            mouse.enabled
-                && mouse_mods.contains(mouse.mods.0)
-                && (!mouse_mode || mouse_mods.contains(ModifiersState::SHIFT))
-        });
+        let highlight =
+            hint.mouse.is_some_and(|mouse| mouse_hint_enabled(mouse_mode, mouse, mouse_mods));
         if !highlight {
             return None;
         }
@@ -420,6 +417,19 @@ pub fn highlighted_at<T>(
 
         None
     })
+}
+
+/// Check whether a mouse hint owns the click at the host boundary.
+///
+/// Shift remains the generic escape hatch while an application reports mouse
+/// events. A hint explicitly bound to Command/Super is already an unambiguous
+/// host gesture, so it must not be forwarded to the terminal application.
+fn mouse_hint_enabled(mouse_mode: bool, mouse: HintMouse, mouse_mods: ModifiersState) -> bool {
+    mouse.enabled
+        && mouse_mods.contains(mouse.mods.0)
+        && (!mouse_mode
+            || mouse_mods.contains(ModifiersState::SHIFT)
+            || mouse.mods.0.contains(ModifiersState::SUPER))
 }
 
 /// Retrieve the hyperlink with its range, if there is one at the specified point.
@@ -650,6 +660,17 @@ mod tests {
         .count();
 
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn command_hint_owns_click_during_mouse_reporting() {
+        let mut command_hint = HintMouse { enabled: true, ..Default::default() };
+        command_hint.mods.0 = ModifiersState::SUPER;
+        let plain_hint = HintMouse { enabled: true, ..Default::default() };
+
+        assert!(mouse_hint_enabled(true, command_hint, ModifiersState::SUPER));
+        assert!(!mouse_hint_enabled(true, plain_hint, ModifiersState::SUPER));
+        assert!(mouse_hint_enabled(true, plain_hint, ModifiersState::SHIFT));
     }
 
     #[test]

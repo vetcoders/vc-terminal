@@ -200,6 +200,7 @@ impl From<TerminalOptions> for PtyOptions {
             shell: options.command().map(Into::into),
             drain_on_exit: options.hold,
             env: HashMap::new(),
+            child_exit_behavior: Default::default(),
             #[cfg(target_os = "windows")]
             escape_args: false,
         }

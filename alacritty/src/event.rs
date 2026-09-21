@@ -1774,6 +1774,11 @@ pub struct Mouse {
     pub click_state: ClickState,
     pub accumulated_scroll: AccumulatedScroll,
     pub cell_side: Side,
+    /// Command/Super hint gesture captured at press time.
+    ///
+    /// This belongs here rather than on the short-lived input `Processor`, since window events
+    /// are drained in separate batches and can recreate the processor between press and release.
+    pub hint_click: HintClickState,
     pub block_hint_launcher: bool,
     pub hint_highlight_dirty: bool,
     pub inside_text_area: bool,
@@ -1791,6 +1796,7 @@ impl Default for Mouse {
             right_button_state: ElementState::Released,
             click_state: ClickState::None,
             cell_side: Side::Left,
+            hint_click: Default::default(),
             hint_highlight_dirty: Default::default(),
             block_hint_launcher: Default::default(),
             inside_text_area: Default::default(),
@@ -1799,6 +1805,15 @@ impl Default for Mouse {
             y: Default::default(),
         }
     }
+}
+
+/// Persistent state of a command hint gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HintClickState {
+    #[default]
+    None,
+    Captured(MouseButton),
+    Canceled(MouseButton),
 }
 
 impl Mouse {
@@ -1983,6 +1998,9 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                     },
                     WindowEvent::Touch(touch) => self.touch(touch),
                     WindowEvent::Focused(is_focused) => {
+                        if !is_focused {
+                            self.cancel_hint_click();
+                        }
                         self.ctx.terminal.is_focused = is_focused;
 
                         // When the unfocused hollow is used we must redraw on focus change.

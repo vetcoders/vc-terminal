@@ -6,7 +6,7 @@
 //! determine what to do when a non-modifier key is pressed.
 
 use std::borrow::Cow;
-use std::cmp::{Ordering, max, min};
+use std::cmp::{max, min, Ordering};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -45,7 +45,7 @@ use crate::display::hint::HintMatch;
 use crate::display::window::{ImeInhibitor, Window};
 use crate::display::{Display, SizeInfo};
 use crate::event::{
-    ClickState, Event, EventType, InlineSearchState, Mouse, TouchPurpose, TouchZoom,
+    ClickState, Event, EventType, HintClickState, InlineSearchState, Mouse, TouchPurpose, TouchZoom,
 };
 use crate::message_bar::{self, Message};
 use crate::scheduler::{Scheduler, TimerId, Topic};
@@ -93,6 +93,9 @@ pub trait ActionContext<T: EventListener> {
     fn mouse(&self) -> &Mouse;
     fn touch_purpose(&mut self) -> &mut TouchPurpose;
     fn modifiers(&mut self) -> &mut Modifiers;
+    fn modifier_state(&mut self) -> ModifiersState {
+        self.modifiers().state()
+    }
     fn scroll(&mut self, _scroll: Scroll) {}
     fn window(&mut self) -> &mut Window;
     fn display(&mut self) -> &mut Display;
@@ -134,6 +137,16 @@ pub trait ActionContext<T: EventListener> {
     fn inline_search_previous(&mut self) {}
     fn hint_input(&mut self, _character: char) {}
     fn trigger_hint(&mut self, _hint: &HintMatch) {}
+    fn has_mouse_hint(&mut self) -> bool {
+        self.display().highlighted_hint.is_some()
+    }
+    fn trigger_mouse_hint(&mut self) {
+        let hint = self.display().highlighted_hint.take();
+        if let Some(hint) = hint.as_ref() {
+            self.trigger_hint(hint);
+        }
+        self.display().highlighted_hint = hint;
+    }
     fn expand_selection(&mut self) {}
     fn semantic_word(&self, point: Point) -> String;
     fn on_terminal_input_start(&mut self) {}
@@ -454,14 +467,11 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     pub fn mouse_moved(&mut self, position: PhysicalPosition<f64>) {
         let size_info = self.ctx.size_info();
 
-        let (x, y) = position.into();
+        let (x, y): (i32, i32) = position.into();
+        let mouse_y = y;
 
         let lmb_pressed = self.ctx.mouse().left_button_state == ElementState::Pressed;
         let rmb_pressed = self.ctx.mouse().right_button_state == ElementState::Pressed;
-        if !self.ctx.selection_is_empty() && (lmb_pressed || rmb_pressed) {
-            self.update_selection_scrolling(y);
-        }
-
         let display_offset = self.ctx.terminal().grid().display_offset();
         let old_point = self.ctx.mouse().point(&size_info, display_offset);
 
@@ -494,8 +504,30 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         // Prompt hint highlight update.
         self.ctx.mouse_mut().hint_highlight_dirty = true;
 
-        // Don't launch URLs if mouse has moved.
+        self.mouse_motion(cell_changed, point, cell_side, lmb_pressed, rmb_pressed, mouse_y);
+    }
+
+    /// Route pointer movement after `mouse_moved` has updated the cursor position.
+    fn mouse_motion(
+        &mut self,
+        cell_changed: bool,
+        point: Point,
+        cell_side: Side,
+        lmb_pressed: bool,
+        rmb_pressed: bool,
+        mouse_y: i32,
+    ) {
+        // Don't launch URLs if mouse has moved. A captured host gesture remains owned by the
+        // hint until its matching release, even after movement cancels the launch.
         self.ctx.mouse_mut().block_hint_launcher = true;
+        self.cancel_hint_click();
+        if !matches!(self.ctx.mouse().hint_click, HintClickState::None) {
+            return;
+        }
+
+        if !self.ctx.selection_is_empty() && (lmb_pressed || rmb_pressed) {
+            self.update_selection_scrolling(mouse_y);
+        }
 
         if (lmb_pressed || rmb_pressed)
             && (self.ctx.modifiers().state().shift_key() || !self.ctx.mouse_mode())
@@ -615,8 +647,20 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     }
 
     fn on_mouse_press(&mut self, button: MouseButton) {
+        if self.command_hint_owns_click(button) {
+            // A matching press establishes a new valid hint gesture even after ordinary pointer
+            // movement set the stale-launch guard. Selection/drag gestures still cancel it.
+            let mouse = self.ctx.mouse_mut();
+            mouse.hint_click = HintClickState::Captured(button);
+            mouse.block_hint_launcher = false;
+            self.ctx.mouse_mut().click_state = ClickState::None;
+            return;
+        }
+
+        self.cancel_hint_click();
+
         // Handle mouse mode.
-        if !self.ctx.modifiers().state().shift_key() && self.ctx.mouse_mode() {
+        if !self.ctx.modifier_state().shift_key() && self.ctx.mouse_mode() {
             self.ctx.mouse_mut().click_state = ClickState::None;
 
             let code = match button {
@@ -694,7 +738,17 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     }
 
     fn on_mouse_release(&mut self, button: MouseButton) {
-        if !self.ctx.modifiers().state().shift_key() && self.ctx.mouse_mode() {
+        let hint_click = self.ctx.mouse().hint_click;
+        if matches!(hint_click, HintClickState::Captured(captured) | HintClickState::Canceled(captured) if captured == button)
+        {
+            self.ctx.mouse_mut().hint_click = HintClickState::None;
+            if matches!(hint_click, HintClickState::Captured(_)) && self.ctx.has_mouse_hint() {
+                self.ctx.trigger_mouse_hint();
+            }
+            return;
+        }
+
+        if !self.ctx.modifier_state().shift_key() && self.ctx.mouse_mode() {
             let code = match button {
                 MouseButton::Left => 0,
                 MouseButton::Middle => 1,
@@ -707,11 +761,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         }
 
         // Trigger hints highlighted by the mouse.
-        let hint = self.ctx.display().highlighted_hint.take();
-        if let Some(hint) = hint.as_ref().filter(|_| button == MouseButton::Left) {
-            self.ctx.trigger_hint(hint);
+        if button == MouseButton::Left {
+            self.ctx.trigger_mouse_hint();
         }
-        self.ctx.display().highlighted_hint = hint;
 
         let timer_id = TimerId::new(Topic::SelectionScrolling, self.ctx.window().id());
         self.ctx.scheduler_mut().unschedule(timer_id);
@@ -719,6 +771,23 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         if let MouseButton::Left | MouseButton::Right = button {
             // Copy selection on release, to prevent flooding the display server.
             self.ctx.copy_selection(ClipboardType::Selection);
+        }
+    }
+
+    /// Command/Super hint clicks take priority over application mouse reporting.
+    fn command_hint_owns_click(&mut self, button: MouseButton) -> bool {
+        button == MouseButton::Left
+            && self.ctx.mouse_mode()
+            && !self.ctx.modifier_state().shift_key()
+            && self.ctx.modifier_state().super_key()
+            && self.ctx.has_mouse_hint()
+    }
+
+    /// Cancel a captured hint while retaining it until its matching release is consumed.
+    pub(crate) fn cancel_hint_click(&mut self) {
+        let hint_click = &mut self.ctx.mouse_mut().hint_click;
+        if let HintClickState::Captured(button) = *hint_click {
+            *hint_click = HintClickState::Canceled(button);
         }
     }
 
@@ -1152,11 +1221,15 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 mod tests {
     use super::*;
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use winit::event::{DeviceId, Event as WinitEvent, WindowEvent};
     use winit::keyboard::Key;
     use winit::window::WindowId;
 
     use alacritty_terminal::event::Event as TerminalEvent;
+    use alacritty_terminal::index::{Column, Line};
 
     use crate::config::Binding;
     use crate::message_bar::MessageBuffer;
@@ -1173,11 +1246,22 @@ mod tests {
         pub clipboard: &'a mut Clipboard,
         pub message_buffer: &'a mut MessageBuffer,
         pub modifiers: Modifiers,
+        pub modifier_state: ModifiersState,
+        pub mouse_mode: bool,
+        pub selection_is_empty: bool,
+        pub has_mouse_hint: bool,
+        pub triggered_mouse_hints: Rc<RefCell<usize>>,
+        pub selection_updates: Rc<RefCell<usize>>,
+        pub pty_writes: Rc<RefCell<Vec<Vec<u8>>>>,
         config: &'a UiConfig,
         inline_search_state: &'a mut InlineSearchState,
     }
 
     impl<T: EventListener> super::ActionContext<T> for ActionContext<'_, T> {
+        fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&self, data: B) {
+            self.pty_writes.borrow_mut().push(data.into().to_vec());
+        }
+
         fn search_next(
             &mut self,
             _origin: Point,
@@ -1212,15 +1296,19 @@ mod tests {
         }
 
         fn selection_is_empty(&self) -> bool {
-            true
+            self.selection_is_empty
         }
 
         fn scroll(&mut self, scroll: Scroll) {
             self.terminal.scroll_display(scroll);
         }
 
+        fn update_selection(&mut self, _point: Point, _side: Side) {
+            *self.selection_updates.borrow_mut() += 1;
+        }
+
         fn mouse_mode(&self) -> bool {
-            false
+            self.mouse_mode
         }
 
         #[inline]
@@ -1240,6 +1328,18 @@ mod tests {
 
         fn modifiers(&mut self) -> &mut Modifiers {
             &mut self.modifiers
+        }
+
+        fn modifier_state(&mut self) -> ModifiersState {
+            self.modifier_state
+        }
+
+        fn has_mouse_hint(&mut self) -> bool {
+            self.has_mouse_hint
+        }
+
+        fn trigger_mouse_hint(&mut self) {
+            *self.triggered_mouse_hints.borrow_mut() += 1;
         }
 
         fn window(&mut self) -> &mut Window {
@@ -1321,6 +1421,13 @@ mod tests {
                     size_info: &size,
                     clipboard: &mut clipboard,
                     modifiers: Default::default(),
+                    modifier_state: Default::default(),
+                    mouse_mode: false,
+                    selection_is_empty: true,
+                    has_mouse_hint: false,
+                    triggered_mouse_hints: Default::default(),
+                    selection_updates: Default::default(),
+                    pty_writes: Default::default(),
                     message_buffer: &mut message_buffer,
                     inline_search_state: &mut inline_search_state,
                     config: &cfg,
@@ -1344,6 +1451,208 @@ mod tests {
                 assert_eq!(processor.ctx.mouse.click_state, $end_state);
             }
         }
+    }
+
+    #[test]
+    fn command_hint_click_owns_mouse_reporting_gesture() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut mouse = Mouse::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            selection_is_empty: true,
+            has_mouse_hint: true,
+            triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+
+        assert_eq!(*processor.ctx.triggered_mouse_hints.borrow(), 1);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_hint_click_survives_processor_recreation_after_pointer_motion() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut mouse = Mouse { block_hint_launcher: true, ..Mouse::default() };
+        // `mouse_moved` sets this guard. A fresh matching press must deliberately establish a
+        // valid hint click instead of inheriting the stale guard.
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            selection_is_empty: true,
+            has_mouse_hint: true,
+            triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        assert!(!processor.ctx.mouse.block_hint_launcher);
+        let opened = processor.ctx.triggered_mouse_hints.clone();
+        let pty_writes = processor.ctx.pty_writes.clone();
+        drop(processor);
+
+        // WindowContext recreates Processor for every drained event batch. Reborrowing the same
+        // persistent Mouse state here is the production lifetime boundary this regression covers.
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            selection_is_empty: true,
+            has_mouse_hint: true,
+            triggered_mouse_hints: opened.clone(),
+            selection_updates: Default::default(),
+            pty_writes: pty_writes.clone(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+
+        assert_eq!(*opened.borrow(), 1);
+        assert!(pty_writes.borrow().is_empty());
+        assert_eq!(processor.ctx.mouse.hint_click, HintClickState::None);
+    }
+
+    #[test]
+    fn canceled_command_hint_motion_stays_host_owned_until_release() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut terminal, b"\x1b[?1002h");
+        let mut mouse = Mouse::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            // A captured hint must not start or extend a pre-existing selection while moving.
+            selection_is_empty: false,
+            has_mouse_hint: true,
+            triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        // Use the production motion dispatcher: release Cmd after the capture, then move with
+        // application drag reporting enabled. This must cancel and retain host ownership.
+        processor.ctx.modifier_state = ModifiersState::default();
+        processor.mouse_motion(true, Point::new(Line(0), Column(0)), Side::Left, true, false, 0);
+
+        assert_eq!(processor.ctx.mouse.hint_click, HintClickState::Canceled(MouseButton::Left));
+        assert_eq!(*processor.ctx.selection_updates.borrow(), 0);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+
+        assert_eq!(*processor.ctx.triggered_mouse_hints.borrow(), 0);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
+        assert_eq!(processor.ctx.mouse.hint_click, HintClickState::None);
+
+        // An ordinary application drag remains on the same production motion route.
+        processor.ctx.selection_is_empty = true;
+        processor.ctx.has_mouse_hint = false;
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.ctx.pty_writes.borrow_mut().clear();
+        processor.mouse_motion(true, Point::new(Line(0), Column(0)), Side::Left, true, false, 0);
+        assert_eq!(*processor.ctx.pty_writes.borrow(), vec![vec![b'\x1b', b'[', b'M', 64, 33, 33]]);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+    }
+
+    #[test]
+    fn mouse_reporting_keeps_ordinary_and_dragged_command_clicks_out_of_the_opener() {
+        let mut clipboard = Clipboard::new_nop();
+        let cfg = UiConfig::default();
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        let mut mouse = Mouse::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let mut message_buffer = MessageBuffer::default();
+
+        let context = ActionContext {
+            terminal: &mut terminal,
+            mouse: &mut mouse,
+            size_info: &size,
+            clipboard: &mut clipboard,
+            modifiers: Default::default(),
+            modifier_state: ModifiersState::SUPER,
+            mouse_mode: true,
+            selection_is_empty: true,
+            has_mouse_hint: false,
+            triggered_mouse_hints: Default::default(),
+            selection_updates: Default::default(),
+            pty_writes: Default::default(),
+            message_buffer: &mut message_buffer,
+            inline_search_state: &mut inline_search_state,
+            config: &cfg,
+        };
+        let mut processor = Processor::new(context);
+
+        // A nonmatching Command click remains an application mouse gesture.
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+        assert_eq!(*processor.ctx.triggered_mouse_hints.borrow(), 0);
+        assert_eq!(processor.ctx.pty_writes.borrow().len(), 2);
+
+        // A gesture that leaves its hint must not open it, nor leak only a release to the PTY.
+        processor.ctx.pty_writes.borrow_mut().clear();
+        processor.ctx.has_mouse_hint = true;
+        processor.mouse_input(ElementState::Pressed, MouseButton::Left);
+        processor.ctx.has_mouse_hint = false;
+        processor.mouse_input(ElementState::Released, MouseButton::Left);
+        assert_eq!(*processor.ctx.triggered_mouse_hints.borrow(), 0);
+        assert!(processor.ctx.pty_writes.borrow().is_empty());
     }
 
     macro_rules! test_process_binding {

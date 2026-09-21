@@ -1,5 +1,6 @@
 target
 alacritty-debug.log
+
 *.log
 dist/
 
