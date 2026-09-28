@@ -364,16 +364,28 @@ fn prune_yaml_nulls(value: &mut serde_yaml::Value, warn_pruned: bool) {
 /// Get the location of the first found default config file paths
 /// according to the following order:
 ///
-/// 1. $XDG_CONFIG_HOME/alacritty/alacritty.toml
-/// 2. $XDG_CONFIG_HOME/alacritty.toml
-/// 3. $HOME/.config/alacritty/alacritty.toml
-/// 4. $HOME/.alacritty.toml
-/// 5. /etc/alacritty/alacritty.toml
+/// 1. $HOME/.config/vibecrafted/vc-terminal/vc-terminal.toml (TOML only)
+/// 2. $XDG_CONFIG_HOME/alacritty/alacritty.toml
+/// 3. $XDG_CONFIG_HOME/alacritty.toml
+/// 4. $HOME/.config/alacritty/alacritty.toml
+/// 5. $HOME/.alacritty.toml
+/// 6. /etc/alacritty/alacritty.toml
 #[cfg(not(windows))]
 pub fn installed_config(suffix: &str) -> Option<PathBuf> {
+    // Finder/Dock launch the binary without the wrapper's --config-file.
+    if suffix == "toml" {
+        if let Some(home) = env::var_os("HOME") {
+            let product =
+                PathBuf::from(home).join(".config/vibecrafted/vc-terminal/vc-terminal.toml");
+            if product.is_file() {
+                return Some(product);
+            }
+        }
+    }
+
     let file_name = format!("alacritty.{suffix}");
 
-    // Try using XDG location by default.
+    // Fall back to the existing Alacritty search order.
     xdg::BaseDirectories::with_prefix("alacritty")
         .find_config_file(&file_name)
         .or_else(|| xdg::BaseDirectories::new().find_config_file(&file_name))
@@ -406,6 +418,80 @@ pub fn installed_config(suffix: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn installed_config_precedence() {
+        use std::process::Command;
+
+        use clap::Parser;
+
+        // Re-execute only this test with an isolated HOME instead of mutating the
+        // process environment underneath the parallel test runner.
+        const TEST_HOME: &str = "VC_TERMINAL_CONFIG_TEST_HOME";
+        let Some(home) = env::var_os(TEST_HOME) else {
+            let home = tempfile::tempdir().unwrap();
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", "config::tests::installed_config_precedence", "--nocapture"])
+                .env(TEST_HOME, home.path())
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join(".config"))
+                .env("XDG_CONFIG_DIRS", home.path().join("system"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        };
+
+        let home = PathBuf::from(home);
+        let product = home.join(".config/vibecrafted/vc-terminal/vc-terminal.toml");
+        let legacy = home.join(".config/alacritty/alacritty.toml");
+        fs::create_dir_all(product.parent().unwrap()).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&product, "[window]\ntitle = 'product'\n").unwrap();
+        fs::write(&legacy, "[window]\ntitle = 'legacy'\n").unwrap();
+
+        assert_eq!(installed_config("toml"), Some(product.clone()));
+        let config = load(&mut Options::default());
+        assert_eq!(config.config_paths.first(), Some(&product));
+        assert_eq!(config.window.identity.title, "product");
+
+        // An explicit CLI path wins even while the product config exists.
+        let mut options = Options::try_parse_from([
+            std::ffi::OsStr::new("alacritty"),
+            std::ffi::OsStr::new("--config-file"),
+            legacy.as_os_str(),
+        ])
+        .unwrap();
+        let config = load(&mut options);
+        assert_eq!(config.config_paths.first(), Some(&legacy));
+        assert_eq!(config.window.identity.title, "legacy");
+
+        // Missing explicit paths do not silently switch to a default config.
+        let missing = home.join("missing.toml");
+        options.config_file = Some(missing.clone());
+        assert_eq!(load(&mut options).config_paths.first(), Some(&missing));
+
+        fs::remove_file(&product).unwrap();
+        assert_eq!(installed_config("toml"), Some(legacy.clone()));
+        assert_eq!(load(&mut Options::default()).window.identity.title, "legacy");
+
+        // A directory at the product path is not a usable config file.
+        fs::create_dir(&product).unwrap();
+        assert_eq!(installed_config("toml"), Some(legacy.clone()));
+        fs::remove_dir(&product).unwrap();
+
+        // The product TOML must not be returned by a legacy YAML lookup.
+        let yaml = legacy.with_extension("yml");
+        fs::write(&yaml, "{}").unwrap();
+        fs::write(&product, "").unwrap();
+        assert_eq!(installed_config("yml"), Some(yaml));
+    }
 
     #[test]
     fn empty_config() {
