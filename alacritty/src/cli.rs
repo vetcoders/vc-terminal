@@ -33,8 +33,9 @@ pub struct Options {
     #[clap(long)]
     pub embed: Option<String>,
 
-    /// Specify alternative configuration file [default:
-    /// $XDG_CONFIG_HOME/alacritty/alacritty.toml].
+    /// Specify alternative configuration file. Defaults to
+    /// $HOME/.config/vibecrafted/vc-terminal/vc-terminal.toml when present,
+    /// otherwise searches legacy Alacritty locations (starting at $XDG_CONFIG_HOME).
     #[cfg(not(any(target_os = "macos", windows)))]
     #[clap(long, value_hint = ValueHint::FilePath)]
     pub config_file: Option<PathBuf>,
@@ -44,7 +45,10 @@ pub struct Options {
     #[clap(long, value_hint = ValueHint::FilePath)]
     pub config_file: Option<PathBuf>,
 
-    /// Specify alternative configuration file [default: $HOME/.config/alacritty/alacritty.toml].
+    /// Specify alternative configuration file. Defaults to
+    /// $HOME/.config/vibecrafted/vc-terminal/vc-terminal.toml when present,
+    /// otherwise searches legacy Alacritty locations (including
+    /// $HOME/.config/alacritty/alacritty.toml).
     #[cfg(target_os = "macos")]
     #[clap(long, value_hint = ValueHint::FilePath)]
     pub config_file: Option<PathBuf>,
