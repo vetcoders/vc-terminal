@@ -3,7 +3,8 @@
 # Full-bleed 1:1 — no padding/border (macOS applies its own mask).
 # Flow ported from labs/vc-surface (wezterm fork) — same brand mark, same pipeline.
 #
-# Default source: assets/icon/vc-terminal-icon.png (the vc_ brand mark).
+# Default source: assets/icon/vc-terminal-icon.png (Vibecrafted's hi-res tray mark,
+# without the separately drawn status badge; see README.md for provenance).
 # Override: VC_TERMINAL_ICON_SRC=/path/to/icon.png|svg
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"

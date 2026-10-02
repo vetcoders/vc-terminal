@@ -5,7 +5,7 @@
 # deterministic binaries and quality gates to the parent release builder.
 
 .PHONY: all help build release-bins binary binary-universal check clippy fmt fmt-check precheck \
-	test icons doctor clean distclean run
+	test icons icons-check doctor clean distclean run
 
 # ──────────────────────────────────────────────────────────
 # Config
@@ -44,6 +44,7 @@ help:
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "binary" "Alias of release-bins"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "binary-universal" "Universal (x86_64+aarch64) release binary"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "icons" "Rebuild terminal.png / alacritty.icns (full-bleed)"
+	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "icons-check" "Verify approved hi-res product icon and carriers"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "run" "Run the terminal from source"
 	@printf "\n  $(C_YELLOW)QUALITY GATES$(C_RESET)\n"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "precheck" "fmt-check + check + donor release build"
@@ -84,6 +85,10 @@ binary-universal:
 ## Rebuild icons (full-bleed icns from assets/icon/vc-terminal-icon.png)
 icons:
 	assets/icon/update.sh
+
+## Verify product icon provenance and derived carriers (no Rust rebuild)
+icons-check:
+	python3 -m unittest discover -s assets/icon -p test_icons.py
 
 ## Run from source
 run:
