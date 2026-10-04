@@ -1,17 +1,19 @@
 # Product icon
 
-`vc-terminal-icon.png` is the unchanged 1254 × 1254 transparent monochrome
-Vibecrafted tray pictogram, without the separately drawn status badge.
+`vc-terminal-icon.png` is the 1254 × 1254 static VC Terminal Dock icon:
+a filled, rounded galactic-navy tile with the pale three-circle product mark.
+The lower-left circle is filled; the upper and lower-right circles are outlined.
+Transparency is confined to the space outside the tile.
 
-Founder-selected source (2026-10-02):
-`vibecrafted/docs/presence/tray-pictogram-monochrome.png` in the sibling repository.
-SHA-256: `e7a1e40e81b09777175c132b6c426d64208689e902cda20e9f37b777a902f7fc`.
+Founder requested a filled application icon on 2026-10-04. The agent prepared
+this variant with imagegen using the prior monochrome tray pictogram as its
+reference (`vibecrafted/docs/presence/tray-pictogram-monochrome.png`).
+Master SHA-256: `94f21388aa5ed358503294a543db80a8a74d7b114137e12e9f854114cc7599d3`.
 
 Run `make icons` to regenerate the 128px reference and macOS ICNS representations
-up to 1024px. Run `make icons-check` to check the approved master and derived assets.
-These are packaged by Vibecrafted's `materialize_vc_terminal_app_bundle` for both
-the embedded helper and Runtime Pack; this donor does not install a separate app.
+up to 1024px. Run `make icons-check` to check the master and derived assets.
+Vibecrafted's `materialize_vc_terminal_app_bundle` packages these for both the
+embedded helper and Runtime Pack; this donor does not install a separate app.
 
-The Dock icon is a static product mark. Tray activity animation and health badges
-are separate UI behavior; neither is baked into this asset. No background, color,
-extra padding, or new artwork has been added.
+Dock artwork is static. Tray activity animation and live health indicators
+are separate behavior. The tray template asset remains independent.

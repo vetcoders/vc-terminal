@@ -1,19 +1,18 @@
-"""Regression checks for the Founder-selected product mark and its carriers."""
+"""Regression checks for the static product mark and its carriers."""
 
 import hashlib
-from pathlib import Path
 import shutil
 import struct
 import subprocess
 import tempfile
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MASTER = ROOT / "assets/icon/vc-terminal-icon.png"
 REFERENCE = ROOT / "assets/icon/terminal.png"
 ICNS = ROOT / "extra/osx/vc-terminal.app/Contents/Resources/alacritty.icns"
-APPROVED_SHA256 = "e7a1e40e81b09777175c132b6c426d64208689e902cda20e9f37b777a902f7fc"
+MASTER_SHA256 = "94f21388aa5ed358503294a543db80a8a74d7b114137e12e9f854114cc7599d3"
 
 
 def png_size(path):
@@ -24,17 +23,17 @@ def png_size(path):
 
 
 class ProductIconTests(unittest.TestCase):
-    def test_master_is_the_unmodified_hires_tray_pictogram(self):
+    def test_master_is_the_pinned_static_dock_tile(self):
         self.assertEqual(png_size(MASTER), (1254, 1254))
         self.assertEqual(
-            hashlib.sha256(MASTER.read_bytes()).hexdigest(), APPROVED_SHA256
+            hashlib.sha256(MASTER.read_bytes()).hexdigest(), MASTER_SHA256
         )
 
     def test_generic_reference_has_the_expected_size(self):
         self.assertEqual(png_size(REFERENCE), (128, 128))
 
     @unittest.skipUnless(shutil.which("sips"), "macOS raster generator required")
-    def test_reference_is_derived_from_the_approved_master(self):
+    def test_reference_is_derived_from_the_pinned_master(self):
         with tempfile.TemporaryDirectory(prefix="vc-terminal-icon-test-") as work:
             expected = Path(work) / "reference.png"
             subprocess.run(
