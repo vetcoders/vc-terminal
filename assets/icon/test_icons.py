@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 MASTER = ROOT / "assets/icon/vc-terminal-icon.png"
 REFERENCE = ROOT / "assets/icon/terminal.png"
 ICNS = ROOT / "extra/osx/vc-terminal.app/Contents/Resources/alacritty.icns"
-MASTER_SHA256 = "94f21388aa5ed358503294a543db80a8a74d7b114137e12e9f854114cc7599d3"
+MARK = ROOT / "assets/icon/vc-terminal-icon-light.png"
+MARK_SHA256 = "0f970578d5cb6aea1472840e4a2f03b3f5a294a9e6e26c682409f5e4767b9a2d"
 
 
 def png_size(path):
@@ -23,10 +24,29 @@ def png_size(path):
 
 
 class ProductIconTests(unittest.TestCase):
-    def test_master_is_the_pinned_static_dock_tile(self):
-        self.assertEqual(png_size(MASTER), (1254, 1254))
+    def test_founder_light_raster_is_preserved_exactly(self):
+        self.assertEqual(png_size(MARK), (1024, 1024))
+        self.assertEqual(hashlib.sha256(MARK.read_bytes()).hexdigest(), MARK_SHA256)
+
+    def test_static_fallback_is_the_dark_tile(self):
+        self.assertEqual(png_size(MASTER), (1024, 1024))
         self.assertEqual(
-            hashlib.sha256(MASTER.read_bytes()).hexdigest(), MASTER_SHA256
+            MASTER.read_bytes(),
+            (ROOT / "assets/icon/vc-terminal-icon-dark.png").read_bytes(),
+        )
+
+    @unittest.skipUnless(
+        shutil.which("swift") and shutil.which("sips"), "native macOS renderer required"
+    )
+    def test_dark_preserves_contours_hollow_centers_alpha_and_gloss(self):
+        subprocess.run(
+            [
+                "swift",
+                str(ROOT / "assets/icon/render.swift"),
+                str(MASTER.parent),
+                "--verify",
+            ],
+            check=True,
         )
 
     def test_generic_reference_has_the_expected_size(self):
@@ -64,8 +84,18 @@ class ProductIconTests(unittest.TestCase):
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            self.assertEqual(
-                (iconset / "icon_512x512@2x.png").read_bytes(), expected.read_bytes()
+            # iconutil normalizes PNG profile chunks; the decoded pixels must
+            # match the same native resize of the canonical static master.
+            subprocess.run(
+                [
+                    "swift",
+                    str(ROOT / "assets/icon/render.swift"),
+                    str(MASTER.parent),
+                    "--compare",
+                    str(iconset / "icon_512x512@2x.png"),
+                    str(expected),
+                ],
+                check=True,
             )
 
 

@@ -185,6 +185,9 @@ fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "macos")]
     macos::disable_autofill();
 
+    #[cfg(target_os = "macos")]
+    let _dock_icon = macos::dock_icon::DockIcon::install();
+
     // Spawn the Unix I/O event polling thread.
     #[cfg(unix)]
     let socket_path = match IoListener::spawn(&config, &options, window_event_loop.create_proxy()) {

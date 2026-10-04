@@ -1,6 +1,7 @@
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSDictionary, NSString, NSUserDefaults, ns_string};
 
+pub mod dock_icon;
 pub mod locale;
 pub mod proc;
 

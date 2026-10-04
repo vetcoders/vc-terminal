@@ -10,6 +10,15 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT/assets/icon"
 
+if [[ -z "${VC_TERMINAL_ICON_SRC:-}" ]]; then
+  if ! command -v swift >/dev/null 2>&1; then
+    echo "native AppKit Swift renderer required to rebuild canonical Dock masters" >&2
+    exit 1
+  fi
+  swift render.swift "$ROOT/assets/icon"
+  cp vc-terminal-icon-dark.png vc-terminal-icon.png
+fi
+
 src="${VC_TERMINAL_ICON_SRC:-$ROOT/assets/icon/vc-terminal-icon.png}"
 if [[ ! -f "$src" ]]; then
   echo "icon source not found: set VC_TERMINAL_ICON_SRC" >&2
