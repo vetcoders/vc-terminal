@@ -581,8 +581,9 @@ pub fn platform_key_bindings() -> Vec<KeyBinding> {
     bindings!(
         KeyBinding;
         Insert, ModifiersState::SHIFT, ~BindingMode::VI, ~BindingMode::SEARCH; Action::Esc("\x1b[2;2~".into());
-        // Tabbing api.
-        "t",    ModifiersState::SUPER;                                         Action::CreateNewTab;
+        // Frame owns workspace tabs; host shortcuts open independent windows.
+        "t",    ModifiersState::SUPER;                                         Action::CreateNewWindow;
+        // Explicit native tab navigation remains available for custom configurations.
         "]",    ModifiersState::SUPER | ModifiersState::SHIFT;                 Action::SelectNextTab;
         "[",    ModifiersState::SUPER | ModifiersState::SHIFT;                 Action::SelectPreviousTab;
         Tab,    ModifiersState::SUPER;                                         Action::SelectNextTab;
