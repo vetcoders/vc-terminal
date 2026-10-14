@@ -2,12 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Result as IoResult, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use log::{error, warn};
@@ -21,18 +21,20 @@ use crate::event::{Event, EventType};
 /// Environment variable name for the IPC socket path.
 const ALACRITTY_SOCKET_ENV: &str = "ALACRITTY_SOCKET";
 
-/// Read timeout for accepted IPC connections.
-const IPC_READ_TIMEOUT: Duration = Duration::from_secs(1);
+/// Total monotonic timeout budget for reading an entire IPC message.
+const IPC_TOTAL_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Maximum size for an IPC message payload (64 KiB).
-const MAX_IPC_MESSAGE_SIZE: u64 = 64 * 1024;
+/// Maximum size for an IPC message payload (2 MiB).
+/// Derived from Darwin `ARG_MAX` (sysctl kern.argmax = 1,048,576 bytes = 1 MiB) with 2x headroom
+/// to accommodate worst-case JSON escaping of the maximum possible CLI arguments.
+const MAX_IPC_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
 
 /// IPC socket listener.
 pub struct IpcListener<S = EventLoopProxy<Event>> {
     pub socket: UnixListener,
 
     event_proxy: S,
-    data: String,
+    data: Vec<u8>,
 }
 
 /// Seam for dispatching IPC events to the event loop.
@@ -74,20 +76,64 @@ impl<S: IpcEventSender> IpcListener<S> {
         // so that peer reads do not immediately fail with WouldBlock.
         let _ = stream.set_nonblocking(false);
 
-        // Bound read duration so an idle peer cannot park the polling thread indefinitely.
-        // On Darwin, setting SO_RCVTIMEO may return EINVAL if the peer already closed/exited,
-        // in which case any buffered data is still readable and will immediately hit EOF.
-        let _ = stream.set_read_timeout(Some(IPC_READ_TIMEOUT));
-
         self.data.clear();
-        let mut reader = BufReader::new(&stream).take(MAX_IPC_MESSAGE_SIZE);
+        let deadline = Instant::now() + IPC_TOTAL_TIMEOUT;
+        let mut reader = BufReader::new(&stream);
+        let mut overflow = false;
 
-        match reader.read_line(&mut self.data) {
-            Ok(0) | Err(_) => return Ok(()),
-            Ok(_) => (),
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(());
+            }
+            let remaining = deadline - now;
+            let _ = stream.set_read_timeout(Some(remaining));
+
+            let buf = match reader.fill_buf() {
+                Ok([]) => break,
+                Ok(buf) => buf,
+                Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => return Ok(()),
+            };
+
+            if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let to_consume = pos + 1;
+                if self.data.len() + to_consume > MAX_IPC_MESSAGE_SIZE {
+                    overflow = true;
+                    break;
+                }
+                self.data.extend_from_slice(&buf[..to_consume]);
+                reader.consume(to_consume);
+                break;
+            } else {
+                let to_consume = buf.len();
+                if self.data.len() + to_consume > MAX_IPC_MESSAGE_SIZE {
+                    overflow = true;
+                    break;
+                }
+                self.data.extend_from_slice(buf);
+                reader.consume(to_consume);
+            }
+        }
+
+        if overflow {
+            warn!("Rejected oversized IPC message exceeding {MAX_IPC_MESSAGE_SIZE} bytes");
+            return Ok(());
+        }
+
+        let data_str = match std::str::from_utf8(&self.data) {
+            Ok(s) => s.trim(),
+            Err(err) => {
+                warn!("Failed to parse UTF-8 IPC message: {err}");
+                return Ok(());
+            },
         };
 
-        let message: SocketMessage = match serde_json::from_str(&self.data) {
+        if data_str.is_empty() {
+            return Ok(());
+        }
+
+        let message: SocketMessage = match serde_json::from_str(data_str) {
             Ok(message) => message,
             Err(err) => {
                 warn!("Failed to parse IPC message: {err}");
@@ -502,5 +548,59 @@ mod tests {
         }
 
         client_thread.join().expect("join client thread");
+    }
+
+    #[test]
+    fn test_continuous_trickle_beyond_budget() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            // Trickle single bytes spaced by 100ms, exceeding the 1s budget (15 * 100ms = 1.5s)
+            for _ in 0..15 {
+                let _ = client.write_all(b" ");
+                let _ = client.flush();
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        listener.process_message().expect("process message");
+        let elapsed = start.elapsed();
+
+        client_thread.join().expect("join client thread");
+
+        assert!(events.lock().unwrap().is_empty());
+        // Verify server returned in finite time bounded by IPC_TOTAL_TIMEOUT (~1s)
+        assert!(elapsed < Duration::from_millis(1800), "Trickle must not park polling thread");
+    }
+
+    #[test]
+    fn test_cap_overflow_rejects_without_dispatching_prefix() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let mut json = serde_json::to_string(&message).expect("serialize");
+            // Pad so total message size exceeds MAX_IPC_MESSAGE_SIZE without newline
+            let padding_needed = (MAX_IPC_MESSAGE_SIZE + 1024).saturating_sub(json.len());
+            json.extend(std::iter::repeat_n(' ', padding_needed));
+            json.push('\n');
+            client.write_all(json.as_bytes()).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        // Prefix was valid JSON, but overflow occurred, so NO event must be dispatched!
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "Must reject overflow without dispatching prefix"
+        );
     }
 }
