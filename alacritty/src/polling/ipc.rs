@@ -2,11 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Result as IoResult, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs};
 
 use log::{error, warn};
@@ -20,20 +21,33 @@ use crate::event::{Event, EventType};
 /// Environment variable name for the IPC socket path.
 const ALACRITTY_SOCKET_ENV: &str = "ALACRITTY_SOCKET";
 
+/// Read timeout for accepted IPC connections.
+const IPC_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Maximum size for an IPC message payload (64 KiB).
+const MAX_IPC_MESSAGE_SIZE: u64 = 64 * 1024;
+
 /// IPC socket listener.
-pub struct IpcListener {
+pub struct IpcListener<S = EventLoopProxy<Event>> {
     pub socket: UnixListener,
 
-    event_proxy: EventLoopProxy<Event>,
+    event_proxy: S,
     data: String,
 }
 
-impl IpcListener {
-    pub fn new(
-        options: &Options,
-        event_proxy: EventLoopProxy<Event>,
-        path: &Path,
-    ) -> Result<Self, IoError> {
+/// Seam for dispatching IPC events to the event loop.
+pub trait IpcEventSender: Send + 'static {
+    fn send_event(&self, event: Event) -> Result<(), ()>;
+}
+
+impl IpcEventSender for EventLoopProxy<Event> {
+    fn send_event(&self, event: Event) -> Result<(), ()> {
+        EventLoopProxy::send_event(self, event).map_err(|_| ())
+    }
+}
+
+impl<S: IpcEventSender> IpcListener<S> {
+    pub fn new(options: &Options, event_proxy: S, path: &Path) -> Result<Self, IoError> {
         // Create unix socket in nonblocking mode.
         let socket = UnixListener::bind(path)?;
         socket.set_nonblocking(true)?;
@@ -47,12 +61,26 @@ impl IpcListener {
         Ok(Self { event_proxy, socket, data: Default::default() })
     }
 
+    #[cfg(test)]
+    pub fn new_with_listener(socket: UnixListener, event_proxy: S) -> Self {
+        Self { event_proxy, socket, data: Default::default() }
+    }
+
     /// Process the next IPC message.
     pub fn process_message(&mut self) -> Result<(), IoError> {
         let (stream, _) = self.socket.accept()?;
 
+        // Darwin UnixListener::accept inherits O_NONBLOCK from the listener; clear it
+        // so that peer reads do not immediately fail with WouldBlock.
+        let _ = stream.set_nonblocking(false);
+
+        // Bound read duration so an idle peer cannot park the polling thread indefinitely.
+        // On Darwin, setting SO_RCVTIMEO may return EINVAL if the peer already closed/exited,
+        // in which case any buffered data is still readable and will immediately hit EOF.
+        let _ = stream.set_read_timeout(Some(IPC_READ_TIMEOUT));
+
         self.data.clear();
-        let mut reader = BufReader::new(&stream);
+        let mut reader = BufReader::new(&stream).take(MAX_IPC_MESSAGE_SIZE);
 
         match reader.read_line(&mut self.data) {
             Ok(0) | Err(_) => return Ok(()),
@@ -235,4 +263,244 @@ pub fn socket_prefix() -> String {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SocketReply {
     GetConfig(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{IpcConfig, IpcGetConfig, WindowOptions};
+    use std::sync::Mutex;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use tempfile::tempdir;
+
+    #[derive(Clone, Default)]
+    struct InertEventProxy {
+        events: Arc<Mutex<Vec<Event>>>,
+    }
+
+    impl IpcEventSender for InertEventProxy {
+        fn send_event(&self, event: Event) -> Result<(), ()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    fn setup_listener(
+    ) -> (tempfile::TempDir, PathBuf, IpcListener<InertEventProxy>, Arc<Mutex<Vec<Event>>>) {
+        let dir = tempdir().expect("failed to create tempdir");
+        let socket_path = dir.path().join("test-ipc.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let proxy = InertEventProxy { events: Arc::clone(&events) };
+        let ipc_listener = IpcListener::new_with_listener(listener, proxy);
+        (dir, socket_path, ipc_listener, events)
+    }
+
+    #[test]
+    fn test_immediate_native_shaped_create_window() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let json = serde_json::to_string(&message).expect("serialize");
+            client.write_all(json.as_bytes()).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0].payload {
+            EventType::CreateWindow(opts) => {
+                assert_eq!(*opts, WindowOptions::default());
+            },
+            other => panic!("Unexpected event type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_connect_before_write() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            thread::sleep(Duration::from_millis(100));
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let json = serde_json::to_string(&message).expect("serialize");
+            client.write_all(json.as_bytes()).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        // Ensure client connects before server calls accept
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "Expected 1 event dispatched after connect-before-write");
+        match &recorded[0].payload {
+            EventType::CreateWindow(opts) => {
+                assert_eq!(*opts, WindowOptions::default());
+            },
+            other => panic!("Unexpected event type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_partial_record_completion() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let mut json = serde_json::to_string(&message).expect("serialize");
+            json.push('\n');
+            let mid = json.len() / 2;
+            let (first, second) = json.split_at(mid);
+            client.write_all(first.as_bytes()).expect("client write first half");
+            client.flush().expect("flush first half");
+            thread::sleep(Duration::from_millis(50));
+            client.write_all(second.as_bytes()).expect("client write second half");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0].payload {
+            EventType::CreateWindow(opts) => {
+                assert_eq!(*opts, WindowOptions::default());
+            },
+            other => panic!("Unexpected event type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_idle_peer_finite_return() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let _client = UnixStream::connect(&socket_path).expect("client connect");
+            thread::sleep(Duration::from_millis(1500));
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        listener.process_message().expect("process message");
+        let elapsed = start.elapsed();
+
+        client_thread.join().expect("join client thread");
+
+        assert!(events.lock().unwrap().is_empty());
+        assert!(elapsed < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_malformed_input_no_event() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            client.write_all(b"{not valid json}\n").expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_config_message() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::Config(IpcConfig {
+                options: vec!["window.title=\"Test\"".to_string()],
+                window_id: None,
+                reset: false,
+            });
+            let json = serde_json::to_string(&message).expect("serialize");
+            client.write_all(json.as_bytes()).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0].payload {
+            EventType::IpcConfig(cfg) => {
+                assert_eq!(cfg.options, vec!["window.title=\"Test\"".to_string()]);
+            },
+            other => panic!("Unexpected event type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_config_message() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            client.set_read_timeout(Some(Duration::from_secs(2))).expect("set read timeout");
+            let message = SocketMessage::GetConfig(IpcGetConfig { window_id: None });
+            let json = serde_json::to_string(&message).expect("serialize");
+            client.write_all(json.as_bytes()).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+
+            let mut reply_buf = String::new();
+            let mut reader = BufReader::new(&client);
+            reader.read_line(&mut reply_buf).expect("read reply");
+            let reply: SocketReply = serde_json::from_str(&reply_buf).expect("parse reply");
+            match reply {
+                SocketReply::GetConfig(content) => {
+                    assert_eq!(content, "mock-config-content");
+                },
+            }
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        // Simulate reply send from event loop and drop stream to close connection
+        {
+            let mut recorded = events.lock().unwrap();
+            assert_eq!(recorded.len(), 1);
+            let event = recorded.pop().unwrap();
+            match event.payload {
+                EventType::IpcGetConfig(stream) => {
+                    let mut stream_clone = stream.try_clone().expect("clone stream");
+                    send_reply(
+                        &mut stream_clone,
+                        SocketReply::GetConfig("mock-config-content".to_string()),
+                    );
+                    drop(stream_clone);
+                    drop(stream);
+                },
+                other => panic!("Unexpected event type: {:?}", other),
+            }
+        }
+
+        client_thread.join().expect("join client thread");
+    }
 }
