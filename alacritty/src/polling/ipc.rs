@@ -24,10 +24,24 @@ const ALACRITTY_SOCKET_ENV: &str = "ALACRITTY_SOCKET";
 /// Total monotonic timeout budget for reading an entire IPC message.
 const IPC_TOTAL_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Maximum size for an IPC message payload (2 MiB).
-/// Derived from Darwin `ARG_MAX` (sysctl kern.argmax = 1,048,576 bytes = 1 MiB) with 2x headroom
-/// to accommodate worst-case JSON escaping of the maximum possible CLI arguments.
-const MAX_IPC_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
+/// Maximum size for an IPC message payload (8 MiB).
+///
+/// On Darwin, the kernel argv/envp space is bounded by `ARG_MAX` (`sysctl kern.argmax` = 1,048,576 bytes = 1 MiB).
+/// The previous derivation assumed a 2x factor based on backslash escaping, which was falsified
+/// because ASCII control characters (U+0000..=U+001F) expand 6x in JSON (`\u00xx`). That 2x claim
+/// is explicitly withdrawn.
+///
+/// In the worst case, 1 MiB of control arguments expands to 6 MiB (6,291,456 bytes) in JSON.
+/// Adding a 2 MiB structural allowance for field keys, quotes, array punctuation, and delimiters,
+/// 8 MiB (8,388,608 bytes) provides a producer-consumer compatible upper bound.
+pub const MAX_IPC_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FaultInjection {
+    FailSetNonblocking,
+    FailSetReadTimeout,
+}
 
 /// IPC socket listener.
 pub struct IpcListener<S = EventLoopProxy<Event>> {
@@ -35,6 +49,9 @@ pub struct IpcListener<S = EventLoopProxy<Event>> {
 
     event_proxy: S,
     data: Vec<u8>,
+
+    #[cfg(test)]
+    fault_injection: Option<FaultInjection>,
 }
 
 /// Seam for dispatching IPC events to the event loop.
@@ -60,12 +77,49 @@ impl<S: IpcEventSender> IpcListener<S> {
             println!("ALACRITTY_SOCKET={}; export ALACRITTY_SOCKET", path.display());
         }
 
-        Ok(Self { event_proxy, socket, data: Default::default() })
+        Ok(Self {
+            event_proxy,
+            socket,
+            data: Default::default(),
+            #[cfg(test)]
+            fault_injection: None,
+        })
     }
 
     #[cfg(test)]
     pub fn new_with_listener(socket: UnixListener, event_proxy: S) -> Self {
-        Self { event_proxy, socket, data: Default::default() }
+        Self {
+            event_proxy,
+            socket,
+            data: Default::default(),
+            #[cfg(test)]
+            fault_injection: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_fault_injection(&mut self, fault: Option<FaultInjection>) {
+        self.fault_injection = fault;
+    }
+
+    fn configure_stream(&self, stream: &UnixStream) -> Result<(), IoError> {
+        #[cfg(test)]
+        if self.fault_injection == Some(FaultInjection::FailSetNonblocking) {
+            return Err(IoError::other("injected set_nonblocking failure"));
+        }
+        stream.set_nonblocking(false)
+    }
+
+    fn set_stream_timeout(
+        &self,
+        stream: &UnixStream,
+        timeout: Option<Duration>,
+    ) -> Result<(), IoError> {
+        #[cfg(test)]
+        if self.fault_injection == Some(FaultInjection::FailSetReadTimeout) {
+            return Err(IoError::other("injected set_read_timeout failure"));
+        }
+        stream.set_read_timeout(timeout)
     }
 
     /// Process the next IPC message.
@@ -74,7 +128,11 @@ impl<S: IpcEventSender> IpcListener<S> {
 
         // Darwin UnixListener::accept inherits O_NONBLOCK from the listener; clear it
         // so that peer reads do not immediately fail with WouldBlock.
-        let _ = stream.set_nonblocking(false);
+        // If setup cannot bound a blocking read, do not perform an unbounded read.
+        if let Err(err) = self.configure_stream(&stream) {
+            warn!("Failed to configure IPC stream blocking mode: {err}");
+            return Ok(());
+        }
 
         self.data.clear();
         let deadline = Instant::now() + IPC_TOTAL_TIMEOUT;
@@ -84,10 +142,30 @@ impl<S: IpcEventSender> IpcListener<S> {
         loop {
             let now = Instant::now();
             if now >= deadline {
+                warn!("IPC message read exceeded total timeout budget");
                 return Ok(());
             }
-            let remaining = deadline - now;
-            let _ = stream.set_read_timeout(Some(remaining));
+            let remaining = deadline.saturating_duration_since(now);
+            if remaining.is_zero() {
+                warn!("IPC message read exceeded total timeout budget");
+                return Ok(());
+            }
+            if let Err(err) = self.set_stream_timeout(&stream, Some(remaining)) {
+                #[cfg(target_os = "macos")]
+                if err.raw_os_error() == Some(22) {
+                    // On Darwin, setsockopt(SO_RCVTIMEO) returns EINVAL (code 22) if the peer
+                    // has already shut down its write end. In this state (SS_CANTRCVMORE), any
+                    // buffered data is immediately readable and will hit EOF without blocking.
+                } else {
+                    warn!("Failed to set IPC stream read timeout: {err}");
+                    return Ok(());
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    warn!("Failed to set IPC stream read timeout: {err}");
+                    return Ok(());
+                }
+            }
 
             let buf = match reader.fill_buf() {
                 Ok([]) => break,
@@ -95,6 +173,12 @@ impl<S: IpcEventSender> IpcListener<S> {
                 Err(err) if err.kind() == ErrorKind::Interrupted => continue,
                 Err(_) => return Ok(()),
             };
+
+            // A blocking fill may have taken time and completed after deadline.
+            if Instant::now() >= deadline {
+                warn!("IPC message read exceeded total timeout budget after fill");
+                return Ok(());
+            }
 
             if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                 let to_consume = pos + 1;
@@ -118,6 +202,12 @@ impl<S: IpcEventSender> IpcListener<S> {
 
         if overflow {
             warn!("Rejected oversized IPC message exceeding {MAX_IPC_MESSAGE_SIZE} bytes");
+            return Ok(());
+        }
+
+        // Final deadline check before dispatch so expired input cannot become an accepted command.
+        if Instant::now() >= deadline {
+            warn!("IPC message read exceeded total timeout budget before dispatch");
             return Ok(());
         }
 
@@ -167,10 +257,22 @@ impl<S: IpcEventSender> IpcListener<S> {
 
 /// Send a message to the active Alacritty socket.
 pub fn send_message(socket: Option<PathBuf>, message: SocketMessage) -> IoResult<()> {
+    // Validate exact serialized size before connecting with a truthful supported limit.
+    let message_json = serde_json::to_string(&message)?;
+    if message_json.len() > MAX_IPC_MESSAGE_SIZE {
+        return Err(IoError::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "IPC message payload ({} bytes) exceeds maximum supported size ({} bytes)",
+                message_json.len(),
+                MAX_IPC_MESSAGE_SIZE
+            ),
+        ));
+    }
+
     let mut socket = find_socket(socket)?;
 
     // Write message to socket.
-    let message_json = serde_json::to_string(&message)?;
     socket.write_all(message_json.as_bytes())?;
     let _ = socket.flush();
 
@@ -315,6 +417,8 @@ pub enum SocketReply {
 mod tests {
     use super::*;
     use crate::cli::{IpcConfig, IpcGetConfig, WindowOptions};
+    use crate::config::ui_config::Program;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -554,13 +658,33 @@ mod tests {
     fn test_continuous_trickle_beyond_budget() {
         let (_dir, socket_path, mut listener, events) = setup_listener();
 
+        let stop_writer = Arc::new(AtomicBool::new(false));
+        let completed_all = Arc::new(AtomicBool::new(false));
+        let iterations = Arc::new(AtomicUsize::new(0));
+
+        let stop_writer_clone = Arc::clone(&stop_writer);
+        let completed_all_clone = Arc::clone(&completed_all);
+        let iterations_clone = Arc::clone(&iterations);
+
         let client_thread = thread::spawn(move || {
             let mut client = UnixStream::connect(&socket_path).expect("client connect");
-            // Trickle single bytes spaced by 100ms, exceeding the 1s budget (15 * 100ms = 1.5s)
-            for _ in 0..15 {
-                let _ = client.write_all(b" ");
-                let _ = client.flush();
+            // Writer is scheduled to run for up to 30 * 100ms = 3.0s (finite watchdog bound),
+            // which is well beyond the 1.0s total budget and 1.8s assertion deadline.
+            let mut count = 0;
+            for _ in 0..30 {
+                if stop_writer_clone.load(Ordering::SeqCst) {
+                    break;
+                }
+                if client.write_all(b" ").is_err() || client.flush().is_err() {
+                    // Connection closed by server
+                    break;
+                }
+                count += 1;
+                iterations_clone.store(count, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(100));
+            }
+            if count == 30 {
+                completed_all_clone.store(true, Ordering::SeqCst);
             }
         });
 
@@ -569,11 +693,31 @@ mod tests {
         listener.process_message().expect("process message");
         let elapsed = start.elapsed();
 
+        // The server MUST have returned BEFORE writer completed its scheduled 3.0s trickle!
+        let writer_completed_all = completed_all.load(Ordering::SeqCst);
+        let completed_iterations = iterations.load(Ordering::SeqCst);
+
+        // Signal writer to stop to clean up promptly (no permanently parked fixture)
+        stop_writer.store(true, Ordering::SeqCst);
         client_thread.join().expect("join client thread");
 
+        assert!(
+            !writer_completed_all,
+            "Server must return due to total timeout budget before writer finishes all iterations"
+        );
+        assert!(
+            completed_iterations < 20,
+            "Writer must not reach late iterations ({completed_iterations} reached) before server returns"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "Server must not return prematurely: elapsed was {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1800),
+            "Server total budget exceeded: elapsed was {elapsed:?}"
+        );
         assert!(events.lock().unwrap().is_empty());
-        // Verify server returned in finite time bounded by IPC_TOTAL_TIMEOUT (~1s)
-        assert!(elapsed < Duration::from_millis(1800), "Trickle must not park polling thread");
     }
 
     #[test]
@@ -602,5 +746,137 @@ mod tests {
             events.lock().unwrap().is_empty(),
             "Must reject overflow without dispatching prefix"
         );
+    }
+
+    #[test]
+    fn test_parent_counterexample_payload_accepted() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        // 400,000 bytes of control U+0001 expands 6x in JSON to >2.4 MB (2,400,002 bytes).
+        let ctrl_escaped = "\\u0001".repeat(400_000);
+        let raw_ctrl = "\u{0001}".repeat(400_000);
+        let json = format!(
+            r#"{{"CreateWindow":{{"terminal_options":{{"working_directory":null,"hold":false,"command":["/usr/bin/true","{ctrl_escaped}"]}},"window_identity":{{"title":null,"class":null}},"window_tabbing_id":null,"option":[]}}}}"#
+        );
+        assert!(json.len() >= 2_400_000, "Counterexample JSON must be > 2.4 MB");
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let mut payload = json.into_bytes();
+            payload.push(b'\n');
+            client.write_all(&payload).expect("client write");
+            client.shutdown(Shutdown::Write).expect("shutdown write");
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "Counterexample payload must be accepted and dispatched");
+        match &recorded[0].payload {
+            EventType::CreateWindow(opts) => match opts.terminal_options.command().unwrap() {
+                Program::WithArgs { program, args } => {
+                    assert_eq!(program, "/usr/bin/true");
+                    assert_eq!(args, vec![raw_ctrl]);
+                },
+                other => panic!("Unexpected program format: {:?}", other),
+            },
+            other => panic!("Unexpected event type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sender_validates_oversized_payload_before_connect() {
+        let json_str = format!(
+            r#"{{"CreateWindow":{{"terminal_options":{{"working_directory":null,"hold":false,"command":["{}"]}},"window_identity":{{"title":null,"class":null}},"window_tabbing_id":null,"option":[]}}}}"#,
+            "a".repeat(MAX_IPC_MESSAGE_SIZE + 1024)
+        );
+        let message: SocketMessage = serde_json::from_str(&json_str).expect("deserialize");
+
+        // Use a nonexistent socket path to prove it fails BEFORE connecting
+        let fake_path = PathBuf::from("/nonexistent/fake/socket.sock");
+        let result = send_message(Some(fake_path), message);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_stream_configuration_failure_refuses_without_reading() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+        listener.set_fault_injection(Some(FaultInjection::FailSetNonblocking));
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let json = serde_json::to_string(&message).expect("serialize");
+            let _ = client.write_all(json.as_bytes());
+            let _ = client.shutdown(Shutdown::Write);
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "Configuration failure must refuse connection without dispatching events"
+        );
+    }
+
+    #[test]
+    fn test_set_read_timeout_failure_refuses_without_reading() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+        listener.set_fault_injection(Some(FaultInjection::FailSetReadTimeout));
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let json = serde_json::to_string(&message).expect("serialize");
+            let _ = client.write_all(json.as_bytes());
+            let _ = client.shutdown(Shutdown::Write);
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        listener.process_message().expect("process message");
+
+        client_thread.join().expect("join client thread");
+
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "Set read timeout failure must refuse connection without dispatching events"
+        );
+    }
+
+    #[test]
+    fn test_expired_input_after_deadline_not_dispatched() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+
+        let client_thread = thread::spawn(move || {
+            let mut client = UnixStream::connect(&socket_path).expect("client connect");
+            // Sleep past the 1s deadline before sending valid command
+            thread::sleep(Duration::from_millis(1100));
+            let message = SocketMessage::CreateWindow(WindowOptions::default());
+            let json = serde_json::to_string(&message).expect("serialize");
+            let _ = client.write_all(json.as_bytes());
+            let _ = client.shutdown(Shutdown::Write);
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        listener.process_message().expect("process message");
+        let elapsed = start.elapsed();
+
+        client_thread.join().expect("join client thread");
+
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "Expired input arriving after deadline must not be dispatched"
+        );
+        assert!(elapsed >= Duration::from_millis(900));
+        assert!(elapsed < Duration::from_millis(1800));
     }
 }
