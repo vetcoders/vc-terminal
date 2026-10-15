@@ -26,10 +26,10 @@ const IPC_TOTAL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Maximum size for an IPC message payload (8 MiB).
 ///
-/// On Darwin, the kernel argv/envp space is bounded by `ARG_MAX` (`sysctl kern.argmax` = 1,048,576 bytes = 1 MiB).
-/// The previous derivation assumed a 2x factor based on backslash escaping, which was falsified
-/// because ASCII control characters (U+0000..=U+001F) expand 6x in JSON (`\u00xx`). That 2x claim
-/// is explicitly withdrawn.
+/// On Darwin, the kernel argv/envp space is bounded by `ARG_MAX` (`sysctl kern.argmax` = 1,048,576
+/// bytes = 1 MiB). The previous derivation assumed a 2x factor based on backslash escaping, which
+/// was falsified because ASCII control characters (U+0000..=U+001F) expand 6x in JSON (`\u00xx`).
+/// That 2x claim is explicitly withdrawn.
 ///
 /// In the worst case, 1 MiB of control arguments expands to 6 MiB (6,291,456 bytes) in JSON.
 /// Adding a 2 MiB structural allowance for field keys, quotes, array punctuation, and delimiters,
@@ -41,6 +41,10 @@ pub const MAX_IPC_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 pub(crate) enum FaultInjection {
     FailSetNonblocking,
     FailSetReadTimeout,
+    #[cfg(target_os = "macos")]
+    ReadTimeoutEinval,
+    #[cfg(target_os = "macos")]
+    TimeoutFallbackNonblocking,
 }
 
 /// IPC socket listener.
@@ -102,12 +106,16 @@ impl<S: IpcEventSender> IpcListener<S> {
         self.fault_injection = fault;
     }
 
-    fn configure_stream(&self, stream: &UnixStream) -> Result<(), IoError> {
+    fn configure_stream(&self, stream: &UnixStream, nonblocking: bool) -> Result<(), IoError> {
         #[cfg(test)]
         if self.fault_injection == Some(FaultInjection::FailSetNonblocking) {
             return Err(IoError::other("injected set_nonblocking failure"));
         }
-        stream.set_nonblocking(false)
+        #[cfg(all(test, target_os = "macos"))]
+        if nonblocking && self.fault_injection == Some(FaultInjection::TimeoutFallbackNonblocking) {
+            return Err(IoError::other("injected fallback set_nonblocking failure"));
+        }
+        stream.set_nonblocking(nonblocking)
     }
 
     fn set_stream_timeout(
@@ -119,6 +127,13 @@ impl<S: IpcEventSender> IpcListener<S> {
         if self.fault_injection == Some(FaultInjection::FailSetReadTimeout) {
             return Err(IoError::other("injected set_read_timeout failure"));
         }
+        #[cfg(all(test, target_os = "macos"))]
+        if matches!(
+            self.fault_injection,
+            Some(FaultInjection::ReadTimeoutEinval | FaultInjection::TimeoutFallbackNonblocking)
+        ) {
+            return Err(IoError::from_raw_os_error(libc::EINVAL));
+        }
         stream.set_read_timeout(timeout)
     }
 
@@ -129,7 +144,7 @@ impl<S: IpcEventSender> IpcListener<S> {
         // Darwin UnixListener::accept inherits O_NONBLOCK from the listener; clear it
         // so that peer reads do not immediately fail with WouldBlock.
         // If setup cannot bound a blocking read, do not perform an unbounded read.
-        if let Err(err) = self.configure_stream(&stream) {
+        if let Err(err) = self.configure_stream(&stream, false) {
             warn!("Failed to configure IPC stream blocking mode: {err}");
             return Ok(());
         }
@@ -152,10 +167,13 @@ impl<S: IpcEventSender> IpcListener<S> {
             }
             if let Err(err) = self.set_stream_timeout(&stream, Some(remaining)) {
                 #[cfg(target_os = "macos")]
-                if err.raw_os_error() == Some(22) {
-                    // On Darwin, setsockopt(SO_RCVTIMEO) returns EINVAL (code 22) if the peer
-                    // has already shut down its write end. In this state (SS_CANTRCVMORE), any
-                    // buffered data is immediately readable and will hit EOF without blocking.
+                if err.raw_os_error() == Some(libc::EINVAL) {
+                    // EINVAL alone does not establish EOF. Drain queued data only after
+                    // nonblocking setup succeeds; an idle or incomplete peer yields WouldBlock.
+                    if let Err(err) = self.configure_stream(&stream, true) {
+                        warn!("Failed to configure IPC stream nonblocking drain: {err}");
+                        return Ok(());
+                    }
                 } else {
                     warn!("Failed to set IPC stream read timeout: {err}");
                     return Ok(());
@@ -244,6 +262,11 @@ impl<S: IpcEventSender> IpcListener<S> {
                 let _ = self.event_proxy.send_event(event);
             },
             SocketMessage::GetConfig(config) => {
+                // A timeout-error drain can enable nonblocking mode; retain blocking reply writes.
+                if let Err(err) = self.configure_stream(&stream, false) {
+                    warn!("Failed to configure IPC stream reply blocking mode: {err}");
+                    return Ok(());
+                }
                 let window_id =
                     config.window_id.and_then(|id| u64::try_from(id).ok()).map(WindowId::from);
                 let event = Event::new(EventType::IpcGetConfig(Arc::new(stream)), window_id);
@@ -418,8 +441,8 @@ mod tests {
     use super::*;
     use crate::cli::{IpcConfig, IpcGetConfig, WindowOptions};
     use crate::config::ui_config::Program;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -436,8 +459,8 @@ mod tests {
         }
     }
 
-    fn setup_listener(
-    ) -> (tempfile::TempDir, PathBuf, IpcListener<InertEventProxy>, Arc<Mutex<Vec<Event>>>) {
+    fn setup_listener()
+    -> (tempfile::TempDir, PathBuf, IpcListener<InertEventProxy>, Arc<Mutex<Vec<Event>>>) {
         let dir = tempdir().expect("failed to create tempdir");
         let socket_path = dir.path().join("test-ipc.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind socket");
@@ -555,6 +578,134 @@ mod tests {
 
         assert!(events.lock().unwrap().is_empty());
         assert!(elapsed < Duration::from_secs(4));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_timeout_setup_einval_with_live_idle_peer() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+        listener.set_fault_injection(Some(FaultInjection::ReadTimeoutEinval));
+
+        let client = UnixStream::connect(&socket_path).expect("client connect");
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let watchdog = thread::spawn(move || {
+            // Keep the peer live and idle until processing returns, or independently release
+            // an unbounded read after three times the total IPC budget.
+            let timed_out = release_rx.recv_timeout(IPC_TOTAL_TIMEOUT * 3).is_err();
+            drop(client);
+            timed_out
+        });
+
+        let start = Instant::now();
+        let result = listener.process_message();
+        let elapsed = start.elapsed();
+        let _ = release_tx.send(());
+        let watchdog_released_peer = watchdog.join().expect("join watchdog");
+
+        println!(
+            "EINVAL idle peer: elapsed={elapsed:?}, watchdog_release={watchdog_released_peer}"
+        );
+        result.expect("process message");
+        assert!(events.lock().unwrap().is_empty(), "Timeout setup failure must not dispatch");
+        assert!(
+            !watchdog_released_peer,
+            "Timeout setup EINVAL must return while the idle peer is still live, not after \
+             watchdog EOF"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_einval_fallback_accepts_queued_messages() {
+        for eof_terminated in [false, true] {
+            for message in [
+                SocketMessage::CreateWindow(WindowOptions::default()),
+                SocketMessage::Config(IpcConfig {
+                    options: vec!["window.title=\"Test\"".to_string()],
+                    window_id: None,
+                    reset: false,
+                }),
+                SocketMessage::GetConfig(IpcGetConfig { window_id: None }),
+            ] {
+                let (_dir, socket_path, mut listener, events) = setup_listener();
+                listener.set_fault_injection(Some(FaultInjection::ReadTimeoutEinval));
+                let mut client = UnixStream::connect(&socket_path).expect("client connect");
+                client.set_read_timeout(Some(IPC_TOTAL_TIMEOUT * 3)).expect("client timeout");
+                let mut json = serde_json::to_string(&message).expect("serialize");
+                if !eof_terminated {
+                    json.push('\n');
+                }
+                client.write_all(json.as_bytes()).expect("queue complete message");
+                if eof_terminated {
+                    client.shutdown(Shutdown::Write).expect("shutdown write");
+                }
+
+                listener.process_message().expect("process message");
+                let mut recorded = events.lock().unwrap();
+                assert_eq!(recorded.len(), 1, "Queued complete message must survive EINVAL");
+                match (message, recorded.pop().unwrap().payload) {
+                    (SocketMessage::CreateWindow(expected), EventType::CreateWindow(actual)) => {
+                        assert_eq!(actual, expected);
+                    },
+                    (SocketMessage::Config(expected), EventType::IpcConfig(actual)) => {
+                        assert_eq!(actual.options, expected.options);
+                        assert_eq!(actual.reset, expected.reset);
+                    },
+                    (SocketMessage::GetConfig(_), EventType::IpcGetConfig(stream)) => {
+                        let mut reply_stream = stream.try_clone().expect("clone reply stream");
+                        send_reply_fallible(
+                            &mut reply_stream,
+                            SocketReply::GetConfig("queued-config".to_string()),
+                        )
+                        .expect("send owned reply");
+                        drop(reply_stream);
+                        drop(stream);
+                        let mut reply = String::new();
+                        BufReader::new(&client).read_line(&mut reply).expect("read reply");
+                        let SocketReply::GetConfig(content) =
+                            serde_json::from_str(&reply).expect("parse reply");
+                        assert_eq!(content, "queued-config");
+                    },
+                    (_, other) => panic!("Unexpected event type: {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_einval_fallback_setup_failure_refuses_queued_message() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+        listener.set_fault_injection(Some(FaultInjection::TimeoutFallbackNonblocking));
+        let mut client = UnixStream::connect(&socket_path).expect("client connect");
+        let mut json =
+            serde_json::to_string(&SocketMessage::CreateWindow(WindowOptions::default()))
+                .expect("serialize");
+        json.push('\n');
+        client.write_all(json.as_bytes()).expect("queue complete message");
+
+        listener.process_message().expect("process message");
+        assert!(events.lock().unwrap().is_empty(), "Failed nonblocking fallback must refuse");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_einval_fallback_refuses_incomplete_live_message() {
+        let (_dir, socket_path, mut listener, events) = setup_listener();
+        listener.set_fault_injection(Some(FaultInjection::ReadTimeoutEinval));
+        let mut client = UnixStream::connect(&socket_path).expect("client connect");
+        client.write_all(b"{\"CreateWindow\":").expect("queue partial message");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            done_tx.send(listener.process_message()).expect("signal completion");
+        });
+
+        // An independent finite watchdog retains the live peer until processing returns.
+        let before_peer_close = done_rx.recv_timeout(IPC_TOTAL_TIMEOUT * 3);
+        drop(client);
+        worker.join().expect("join worker");
+        before_peer_close.expect("must return before watchdog EOF").expect("process message");
+        assert!(events.lock().unwrap().is_empty(), "Incomplete input must not dispatch");
     }
 
     #[test]
@@ -707,7 +858,8 @@ mod tests {
         );
         assert!(
             completed_iterations < 20,
-            "Writer must not reach late iterations ({completed_iterations} reached) before server returns"
+            "Writer must not reach late iterations ({completed_iterations} reached) before server \
+             returns"
         );
         assert!(
             elapsed >= Duration::from_millis(900),
