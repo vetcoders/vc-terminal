@@ -162,8 +162,17 @@ where
             }
         }
 
-        // Queue terminal redraw unless all processed bytes were synchronized.
-        if state.parser.sync_bytes_count() < processed && processed > 0 {
+        // Release terminal lock and lease before waking the UI thread so redraw
+        // does not contend on FairMutex<Term>.
+        drop(terminal);
+        drop(_terminal_lease);
+
+        // Queue terminal redraw unless a synchronized update (CSI ? 2026 h) is
+        // still open across PTY reads or all processed bytes were synchronized.
+        if state.parser.sync_timeout().sync_timeout().is_none()
+            && state.parser.sync_bytes_count() < processed
+            && processed > 0
+        {
             self.event_proxy.send_event(Event::Wakeup);
         }
 
