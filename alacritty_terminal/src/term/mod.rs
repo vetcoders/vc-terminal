@@ -1984,6 +1984,20 @@ impl<T: EventListener> Handler for Term<T> {
                 return;
             },
 
+            // Alternate Screen Buffer (XTerm 47 / 1047)
+            PrivateMode::Unknown(47 | 1047) => {
+                if !self.mode.contains(TermMode::ALT_SCREEN) {
+                    self.swap_alt();
+                }
+                return;
+            },
+
+            // Save Cursor as in DECSC (XTerm 1048)
+            PrivateMode::Unknown(1048) => {
+                self.save_cursor_position();
+                return;
+            },
+
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2064,6 +2078,20 @@ impl<T: EventListener> Handler for Term<T> {
             // SixelCursorToTheRight
             PrivateMode::Unknown(8452) => {
                 self.mode.remove(TermMode::SIXEL_CURSOR_TO_THE_RIGHT);
+                return;
+            },
+
+            // Alternate Screen Buffer (XTerm 47 / 1047)
+            PrivateMode::Unknown(47 | 1047) => {
+                if self.mode.contains(TermMode::ALT_SCREEN) {
+                    self.swap_alt();
+                }
+                return;
+            },
+
+            // Restore Cursor as in DECRC (XTerm 1048)
+            PrivateMode::Unknown(1048) => {
+                self.restore_cursor_position();
                 return;
             },
 
@@ -2154,6 +2182,8 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
+            PrivateMode::Unknown(47 | 1047) => self.mode.contains(TermMode::ALT_SCREEN).into(),
+            PrivateMode::Unknown(1048) => ModeState::Set,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -3952,5 +3982,49 @@ mod tests {
         assert!(term.grid()[Line(0)][Column(0)].graphics().is_none());
         assert!(term.grid()[Line(1)][Column(0)].graphics().is_some());
         assert_eq!(term.graphics.take_queues().unwrap().pending.len(), 1);
+    }
+
+    #[test]
+    fn alt_screen_modes_47_1047_1048_and_sync_update_chunks() {
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+
+        parser.advance(&mut term, b"PRIMARY");
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'P');
+        assert!(!term.mode().contains(TermMode::ALT_SCREEN));
+
+        // Save cursor via 1048h and swap to alt screen via 1047h.
+        parser.advance(&mut term, b"\x1b[?1048h\x1b[?1047h\x1b[HALT_1047");
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'A');
+
+        // Exit 1047l and restore cursor via 1048l.
+        parser.advance(&mut term, b"\x1b[?1047l\x1b[?1048l");
+        assert!(!term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'P');
+        assert_eq!(term.grid().cursor.point, Point::new(Line(0), Column(7)));
+
+        // Legacy mode 47h / 47l also swaps and restores primary screen.
+        parser.advance(&mut term, b"\x1b[?47h\x1b[HALT_47");
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'A');
+        parser.advance(&mut term, b"\x1b[?47l");
+        assert!(!term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'P');
+
+        // Multi-chunk CSI ? 2026 h synchronized update keeps sync_timeout active
+        // even though sync_bytes_count() excludes the 8-byte BSU sequence.
+        let chunk1 = b"\x1b[?2026h\x1b[HSYNCED";
+        parser.advance(&mut term, chunk1);
+        assert!(parser.sync_timeout().sync_timeout().is_some());
+        assert!(parser.sync_bytes_count() < chunk1.len());
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'P');
+
+        let chunk2 = b"\x1b[?2026l";
+        parser.advance(&mut term, chunk2);
+        assert!(parser.sync_timeout().sync_timeout().is_none());
+        assert_eq!(parser.sync_bytes_count(), 0);
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 'S');
     }
 }
