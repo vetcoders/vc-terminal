@@ -135,7 +135,15 @@ impl Drop for TemporaryFiles {
 /// config change monitor, and runs the main display loop.
 fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
     // Setup winit event loop.
-    let window_event_loop = EventLoop::<Event>::with_user_event().build()?;
+    let mut event_loop_builder = EventLoop::<Event>::with_user_event();
+    #[cfg(target_os = "macos")]
+    let application_role = macos::ApplicationRole::from_hosted(options.vibecrafted_hosted);
+    #[cfg(target_os = "macos")]
+    if let Some(policy) = application_role.activation_policy() {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        event_loop_builder.with_activation_policy(policy);
+    }
+    let window_event_loop = event_loop_builder.build()?;
 
     // Initialize the logger as soon as possible as to capture output from other subsystems.
     let log_file = logging::initialize(&options, window_event_loop.create_proxy())
@@ -186,7 +194,11 @@ fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
     macos::disable_autofill();
 
     #[cfg(target_os = "macos")]
-    let _dock_icon = macos::dock_icon::DockIcon::install();
+    let _dock_icon = if application_role.owns_dock_icon() {
+        macos::dock_icon::DockIcon::install()
+    } else {
+        None
+    };
 
     // Spawn the Unix I/O event polling thread.
     #[cfg(unix)]

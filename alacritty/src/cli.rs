@@ -21,6 +21,11 @@ use crate::logging::LOG_TARGET_IPC_CONFIG;
 #[derive(Parser, Default, Debug)]
 #[clap(author, about, version = env!("VERSION"))]
 pub struct Options {
+    /// Hosted window helper; the product's signed Main owns the public app.
+    #[cfg(target_os = "macos")]
+    #[clap(long, hide = true)]
+    pub vibecrafted_hosted: bool,
+
     /// Print all events to STDOUT.
     #[clap(long)]
     pub print_events: bool,
@@ -443,6 +448,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     use clap_complete::Shell;
     use toml::Table;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hosted_role_requires_an_explicit_argument() {
+        assert!(!Options::try_parse_from(["vc-terminal"]).unwrap().vibecrafted_hosted);
+        assert!(
+            Options::try_parse_from(["vc-terminal", "--vibecrafted-hosted"])
+                .unwrap()
+                .vibecrafted_hosted
+        );
+        assert!(Options::try_parse_from(["vc-terminal", "--vibecrafted-hosted=foreign"]).is_err());
+    }
 
     #[test]
     fn dynamic_title_ignoring_options_by_default() {
