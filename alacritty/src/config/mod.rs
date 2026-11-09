@@ -498,6 +498,16 @@ mod tests {
         toml::from_str::<UiConfig>("").unwrap();
     }
 
+    #[test]
+    fn blur_radius_defaults_to_twenty_and_is_configurable() {
+        let default = toml::from_str::<UiConfig>("").unwrap();
+        assert_eq!(default.window.blur_radius, 20);
+
+        let custom = toml::from_str::<UiConfig>("[window]\nblur = true\nblur_radius = 35").unwrap();
+        assert!(custom.window.blur);
+        assert_eq!(custom.window.blur_radius, 35);
+    }
+
     fn yaml_to_toml(contents: &str) -> String {
         let mut value: serde_yaml::Value = serde_yaml::from_str(contents).unwrap();
         prune_yaml_nulls(&mut value, false);

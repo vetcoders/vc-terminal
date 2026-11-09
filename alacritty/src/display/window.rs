@@ -178,7 +178,7 @@ impl Window {
             .with_theme(config.window.theme())
             .with_visible(false)
             .with_transparent(true)
-            .with_blur(config.window.blur)
+            .with_blur(config.window.blur && cfg!(not(target_os = "macos")))
             .with_maximized(config.window.maximized())
             .with_fullscreen(config.window.fullscreen())
             .with_window_level(config.window.level.into());
@@ -198,6 +198,9 @@ impl Window {
 
         #[cfg(target_os = "macos")]
         use_srgb_color_space(&window);
+
+        #[cfg(target_os = "macos")]
+        set_macos_blur_radius(&window, config.window.blur, config.window.blur_radius);
 
         let scale_factor = window.scale_factor();
         log::info!("Window scale factor: {scale_factor}");
@@ -372,8 +375,15 @@ impl Window {
         self.window.set_transparent(transparent);
     }
 
-    pub fn set_blur(&self, blur: bool) {
-        self.window.set_blur(blur);
+    pub fn set_blur(&self, blur: bool, radius: u16) {
+        #[cfg(target_os = "macos")]
+        set_macos_blur_radius(&self.window, blur, radius);
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = radius;
+            self.window.set_blur(blur);
+        }
     }
 
     pub fn set_maximized(&self, maximized: bool) {
@@ -534,4 +544,33 @@ fn use_srgb_color_space(window: &WinitWindow) {
     };
 
     view.window().unwrap().setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGSMainConnectionID() -> *mut std::ffi::c_void;
+    fn CGSSetWindowBackgroundBlurRadius(
+        connection_id: *mut std::ffi::c_void,
+        window_id: isize,
+        radius: i64,
+    ) -> i32;
+}
+
+/// Set the background blur radius directly; winit's `set_blur` only knows a fixed radius of 80.
+#[cfg(target_os = "macos")]
+fn set_macos_blur_radius(window: &WinitWindow, blur: bool, radius: u16) {
+    let view = match window.window_handle().unwrap().as_raw() {
+        RawWindowHandle::AppKit(handle) => {
+            assert!(MainThreadMarker::new().is_some());
+            unsafe { handle.ns_view.cast::<NSView>().as_ref() }
+        },
+        _ => return,
+    };
+    let Some(ns_window) = view.window() else { return };
+
+    let radius = if blur { i64::from(radius) } else { 0 };
+    unsafe {
+        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), ns_window.windowNumber(), radius);
+    }
 }

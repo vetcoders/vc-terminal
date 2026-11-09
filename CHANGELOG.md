@@ -17,8 +17,13 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 - Added `extra/config/vibecrafted-host.toml` — recommended host fragment for the
   Vibecrafted stack (wheel `~Alt` scrollback / `Alt` arrows, `option_as_alt`)
 
+### Added
+
+- `window.blur_radius` (macOS), default `20`
+
 ### Fixed
 
+- macOS blur used winit's fixed radius of 80, washing translucent windows out into a grey haze
 - Spurious "Failed to set new owner of XCB selection" warnings on X11
 - Lacking permissions to launch software sending Apple events
 

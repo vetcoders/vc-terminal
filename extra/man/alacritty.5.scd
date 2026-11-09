@@ -142,6 +142,13 @@ This section documents the *[window]* table of the configuration file.
 
 	Default: _false_
 
+*blur_radius* = _<integer>_ # _(macOS only)_
+
+	Radius of the blur behind transparent windows, in points. Larger values smear
+	whatever is behind the window into a uniform haze.
+
+	Default: _20_
+
 *startup_mode* = _"Windowed"_ | _"Maximized"_ | _"Fullscreen"_ | _"SimpleFullscreen"_
 
 	Startup mode (changes require restart)

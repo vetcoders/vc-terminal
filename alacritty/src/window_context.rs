@@ -320,7 +320,7 @@ impl WindowContext {
 
         // Change opacity and blur state.
         self.display.window.set_transparent(!opaque);
-        self.display.window.set_blur(self.config.window.blur);
+        self.display.window.set_blur(self.config.window.blur, self.config.window.blur_radius);
 
         // Update hint keys.
         self.display.hint_state.update_alphabet(self.config.hints.alphabet());

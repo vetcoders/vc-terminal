@@ -16,6 +16,10 @@ use crate::config::ui_config::{Delta, Percentage};
 /// Default Alacritty name, used for window title and class.
 pub const DEFAULT_NAME: &str = "Alacritty";
 
+/// winit hardcodes 80 on macOS, which turns anything behind a translucent window into a grey
+/// haze; 20 matches Ghostty's `background-blur-radius`.
+pub const DEFAULT_BLUR_RADIUS: u16 = 20;
+
 #[derive(ConfigDeserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct WindowConfig {
     /// Initial position.
@@ -48,6 +52,9 @@ pub struct WindowConfig {
     /// Request blur behind the window.
     pub blur: bool,
 
+    /// Blur radius behind the window, in points (macOS only).
+    pub blur_radius: u16,
+
     /// Controls which `Option` key should be treated as `Alt`.
     option_as_alt: OptionAsAlt,
 
@@ -72,6 +79,7 @@ impl Default for WindowConfig {
         Self {
             dynamic_title: true,
             blur: Default::default(),
+            blur_radius: DEFAULT_BLUR_RADIUS,
             embed: Default::default(),
             padding: Default::default(),
             opacity: Default::default(),
