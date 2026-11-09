@@ -1,11 +1,10 @@
 # vc-terminal (Alacritty fork) — deterministic terminal substrate
 # 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 #
-# Vibecrafted owns app/DMG/install/update. This repository only supplies
-# deterministic binaries and quality gates to the parent release builder.
+# Standalone app/DMG packaging plus the unchanged binary donor contract.
 
 .PHONY: all help build release-bins binary binary-universal check clippy fmt fmt-check precheck \
-	test icons icons-check doctor clean distclean run
+	test icons icons-check doctor clean distclean run app dmg packaging-test
 
 # ──────────────────────────────────────────────────────────
 # Config
@@ -36,13 +35,15 @@ all: help
 
 ## Show this help
 help:
-	@printf "\n$(C_CYAN)vc-terminal$(C_RESET) — Alacritty fork · Vibecrafted donor surface\n"
+	@printf "\n$(C_CYAN)vc-terminal$(C_RESET) — standalone terminal · Alacritty fork\n"
 	@printf "$(C_CYAN)────────────────────────────────────────────────────────────────────────$(C_RESET)\n\n"
 	@printf "  $(C_YELLOW)BUILD$(C_RESET)\n"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "build" "Debug cargo build"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "release-bins" "Release cargo binary only (no .app)"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "binary" "Alias of release-bins"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "binary-universal" "Universal (x86_64+aarch64) release binary"
+	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "app" "Build signed dist/vc-terminal.app (no notarization)"
+	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "dmg" "Build signed app + dist/vc-terminal.dmg (no notarization)"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "icons" "Rebuild terminal.png / alacritty.icns (full-bleed)"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "icons-check" "Verify approved hi-res product icon and carriers"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "run" "Run the terminal from source"
@@ -53,6 +54,7 @@ help:
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "fmt" "cargo +nightly fmt"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "fmt-check" "fmt --check"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "test" "cargo test (workspace)"
+	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "packaging-test" "macOS packaging contract tests"
 	@printf "\n  $(C_YELLOW)INSPECTION$(C_RESET)\n"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "doctor" "Toolchain + donor binary state"
 	@printf "    $(C_GREEN)%-16s$(C_RESET) %s\n" "clean" "Remove dist/"
@@ -61,8 +63,8 @@ help:
 	@printf "\n  $(C_CYAN)Integrator contract:$(C_RESET)\n"
 	@printf "    make precheck\n"
 	@printf "    make release-bins              # consumed by Vibecrafted.app builder\n\n"
-	@printf "  Packaging, signing, notarization, installation and updates are owned by\n"
-	@printf "  the sibling vibecrafted repository and its single Vibecrafted.dmg.\n\n"
+	@printf "  make app / make dmg sign with Developer ID team MW223P3NPX when available,\n"
+	@printf "  otherwise ad-hoc. These targets do not notarize, install or publish.\n\n"
 
 # ──────────────────────────────────────────────────────────
 # Build
@@ -75,6 +77,16 @@ build:
 ## Release binary only (no .app layout)
 release-bins binary:
 	$(DEPLOYMENT_TARGET) $(CARGO) build --release
+
+## Standalone signed app / DMG; the script builds through release-bins
+app:
+	CARGO="$(CARGO)" bash scripts/build-vc-terminal-release.sh --skip-dmg
+
+dmg:
+	CARGO="$(CARGO)" bash scripts/build-vc-terminal-release.sh
+
+packaging-test:
+	python3 -m unittest discover -s scripts -p test_macos_release.py
 
 ## Universal release binary (both architectures, lipo-merged)
 binary-universal:

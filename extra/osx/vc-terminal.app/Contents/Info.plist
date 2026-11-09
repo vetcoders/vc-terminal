@@ -5,7 +5,7 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>alacritty</string>
+  <string>vc-terminal</string>
   <key>CFBundleIdentifier</key>
   <string>io.vetcoders.vc-terminal</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -24,6 +24,8 @@
   <string>1</string>
   <key>CFBundleIconFile</key>
   <string>alacritty.icns</string>
+  <key>ATSApplicationFontsPath</key>
+  <string>fonts/source-code-pro</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMainNibFile</key>
@@ -34,8 +36,6 @@
   <string>vc-terminal</string>
   <key>NSRequiresAquaSystemAppearance</key>
   <string>NO</string>
-    <key>com.apple.security.automation.apple-events</key>
-    <true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>An application in vc-terminal would like to access AppleScript.</string>
     <key>NSCalendarsUsageDescription</key>
