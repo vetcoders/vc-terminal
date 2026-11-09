@@ -2,7 +2,7 @@
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">vc-terminal — Vibecrafted terminal substrate</h1>
+<h1 align="center">vc-terminal — standalone terminal</h1>
 
 <p align="center">
   <img alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"
@@ -11,22 +11,49 @@
 
 ## About
 
-`vc-terminal` is the deterministic terminal donor used by the
-[`vibecrafted`](https://github.com/vetcoders/vibecrafted) release builder. It
-does not publish or install a separate app, DMG, MSI, or update channel.
-`Vibecrafted.app` owns packaging, signing, notarization, installation, updates,
-runtime environment and the user-facing product boundary; this repository owns
-the terminal binary and its tests.
+`vc-terminal` is an Alacritty-based terminal with its own macOS app and local
+DMG build. It starts as a regular application with a Dock icon. The explicit
+`--vibecrafted-hosted` switch retains the accessory/helper role used by existing
+Vibecrafted installations.
 
-Integrator entrypoint:
+The binary donor contract for the
+[`vibecrafted`](https://github.com/vetcoders/vibecrafted) release builder remains:
 
 ```sh
 make release-bins
 ```
 
-For end-user installation, use the single `Vibecrafted.dmg` from the
-Vibecrafted release. The upstream Alacritty documentation below remains useful
-for inherited terminal behavior and development.
+It produces `target/release/alacritty` with the default Cargo target directory.
+The upstream Alacritty documentation below describes inherited terminal behavior.
+
+### Build the macOS app
+
+Requirements: macOS, Rust/Cargo, Xcode Command Line Tools, Python 3, and `scdoc`
+(`brew install scdoc`). The system supplies `tic`, `codesign` and `hdiutil`.
+
+```sh
+make app             # dist/vc-terminal.app
+make dmg             # app plus dist/vc-terminal.dmg
+make packaging-test  # packaging contracts with fake build/signing tools
+```
+
+Both targets build through `make release-bins`. The app executable is
+`Contents/MacOS/vc-terminal`; Info.plist records the Cargo package version and
+source commit. Source Code Pro fonts and their OFL license are bundled privately
+through `ATSApplicationFontsPath`. Packaging does not change the default font.
+
+The script uses an existing **Developer ID Application** identity for team
+`MW223P3NPX` from the keychain when available, with hardened runtime and the
+audio-input entitlement. Otherwise it reports ad-hoc signing. `DIST_DIR` can
+override the output directory. For a previously built binary matching HEAD:
+
+```sh
+bash scripts/build-vc-terminal-release.sh --skip-build --skip-dmg
+dist/vc-terminal.app/Contents/MacOS/vc-terminal --version
+```
+
+These targets do not notarize, install, publish, or provide an updater. The DMG
+is a local build artifact, not a notarized public release.
 
 Alacritty is a modern terminal emulator that comes with sensible defaults, but
 allows for extensive [configuration](#configuration). By integrating with other
@@ -95,8 +122,10 @@ termination remains an explicit `vc-frame kill-session` / `delete-session`
 operation and is never inferred from window close.
 
 
-Alacritty doesn't create the config file for you, but it looks for one in the
-following locations:
+vc-terminal doesn't create the config file for you. On macOS and other Unix
+systems, it first checks
+`$HOME/.config/vibecrafted/vc-terminal/vc-terminal.toml`, then the inherited
+locations below. This build retains that existing configuration lookup order.
 
 1. `$XDG_CONFIG_HOME/alacritty/alacritty.toml`
 2. `$XDG_CONFIG_HOME/alacritty.toml`

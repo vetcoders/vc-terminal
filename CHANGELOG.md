@@ -12,6 +12,13 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 ### Packaging
 
+- Restored standalone macOS `make app` and `make dmg`, with local signing
+  (Developer ID team MW223P3NPX when available, otherwise ad-hoc), hardened
+  runtime, audio-input entitlement, Cargo version and source commit provenance
+- Bundled Source Code Pro variable fonts and OFL license privately through
+  `ATSApplicationFontsPath`; default font and configuration paths are unchanged
+- Kept `make release-bins` and the opt-in `--vibecrafted-hosted` helper role
+  compatible with the existing Vibecrafted builder and launcher
 - Fixed `alacritty-escapes(7)` manpage missing from macOS install
 - Added the `Open Alacritty here` entry to the right-click context menu for folders on Windows
 - Added `extra/config/vibecrafted-host.toml` — recommended host fragment for the
@@ -23,6 +30,8 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 ### Fixed
 
+- Cmd+T opens an independent macOS window and automatic native window tabbing
+  is disabled; standalone launches explicitly use regular activation and Dock ownership
 - macOS blur used winit's fixed radius of 80, washing translucent windows out into a grey haze
 - Spurious "Failed to set new owner of XCB selection" warnings on X11
 - Lacking permissions to launch software sending Apple events
