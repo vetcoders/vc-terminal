@@ -31,6 +31,8 @@ use winit::event::{
     Touch as TouchEvent, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop, EventLoopProxy};
+#[cfg(target_os = "macos")]
+use winit::platform::macos::ActiveEventLoopExtMacOS;
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::WindowId;
 
@@ -231,6 +233,12 @@ impl ApplicationHandler<Event> for Processor {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        #[cfg(target_os = "macos")]
+        if cause == StartCause::Init {
+            // Keep host windows separate regardless of the system's tab preference.
+            event_loop.set_allows_automatic_window_tabbing(false);
+        }
+
         if cause != StartCause::Init || self.cli_options.daemon {
             return;
         }

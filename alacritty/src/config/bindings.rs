@@ -578,11 +578,17 @@ pub fn platform_key_bindings() -> Vec<KeyBinding> {
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub fn platform_key_bindings() -> Vec<KeyBinding> {
+    macos_key_bindings()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_key_bindings() -> Vec<KeyBinding> {
     bindings!(
         KeyBinding;
         Insert, ModifiersState::SHIFT, ~BindingMode::VI, ~BindingMode::SEARCH; Action::Esc("\x1b[2;2~".into());
-        // Tabbing api.
-        "t",    ModifiersState::SUPER;                                         Action::CreateNewTab;
+        // Frame owns workspace tabs; host shortcuts open independent windows.
+        "t",    ModifiersState::SUPER;                                         Action::CreateNewWindow;
+        // Explicit native tab navigation remains available for custom configurations.
         "]",    ModifiersState::SUPER | ModifiersState::SHIFT;                 Action::SelectNextTab;
         "[",    ModifiersState::SUPER | ModifiersState::SHIFT;                 Action::SelectPreviousTab;
         Tab,    ModifiersState::SUPER;                                         Action::SelectNextTab;
@@ -1251,6 +1257,22 @@ mod tests {
     use winit::keyboard::ModifiersState;
 
     type MockBinding = Binding<usize>;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_t_opens_an_independent_window() {
+        let key =
+            BindingKey::Keycode { key: Key::Character("t".into()), location: KeyLocation::Any };
+        let bindings = macos_key_bindings();
+        let triggered: Vec<_> = bindings
+            .iter()
+            .filter(|binding| {
+                binding.is_triggered_by(BindingMode::empty(), ModifiersState::SUPER, &key)
+            })
+            .collect();
+        assert_eq!(triggered.len(), 1);
+        assert_eq!(triggered[0].action, Action::CreateNewWindow);
+    }
 
     impl Default for MockBinding {
         fn default() -> Self {

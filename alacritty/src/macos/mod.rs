@@ -19,7 +19,7 @@ impl ApplicationRole {
 
     pub fn activation_policy(self) -> Option<winit::platform::macos::ActivationPolicy> {
         match self {
-            Self::Standalone => None,
+            Self::Standalone => Some(winit::platform::macos::ActivationPolicy::Regular),
             Self::Hosted => Some(winit::platform::macos::ActivationPolicy::Accessory),
         }
     }
@@ -50,8 +50,12 @@ mod tests {
         let hosted = ApplicationRole::from_hosted(true);
         assert!(matches!(hosted.activation_policy(), Some(ActivationPolicy::Accessory)));
         assert!(!hosted.owns_dock_icon());
+    }
+
+    #[test]
+    fn standalone_role_has_regular_policy_and_dock_ownership() {
         let standalone = ApplicationRole::from_hosted(false);
-        assert!(standalone.activation_policy().is_none());
+        assert!(matches!(standalone.activation_policy(), Some(ActivationPolicy::Regular)));
         assert!(standalone.owns_dock_icon());
     }
 }
